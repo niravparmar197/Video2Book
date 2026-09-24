@@ -2,7 +2,7 @@
 
 ## Status: In Progress
 
-- [ ] Task 1: Backend — expose book metadata via `BookResponse` (P0)
+- [x] Task 1: Backend — expose book metadata via `BookResponse` (P0)
   - Acceptance: `GET /books/{id}` (and the `POST /books/youtube` /
     `POST /books/{id}/retry` responses, since they share `BookResponse`) include
     `url: str`, `created_at: str` (ISO 8601), `estimated_cost_usd: float`, and
@@ -11,6 +11,24 @@
     backend suite (107+ tests) still passes.
   - Files: backend/api/schemas.py, backend/api/routers/books.py,
     backend/tests/integration/test_books_status.py
+  - Completed: 2026-09-25 — Added `VideoOut` schema and `url`/`created_at`/`videos`
+    fields to `BookResponse` in `backend/api/schemas.py` (`estimated_cost_usd` was
+    already exposed by a concurrent session's sprints/v8 work, found on re-reading the
+    file before editing). No route code changes were needed: `BookResponse`'s
+    `from_attributes=True` config cascades through the `videos: list[VideoOut]` field
+    and lazy-loads `Book.videos` automatically when FastAPI serializes the response,
+    confirmed by a new test with real `Video` rows (`test_get_book_includes_video_titles`).
+    Also fixed the pre-existing exact-dict-equality test
+    (`test_get_book_reflects_current_db_state`) to account for the new fields.
+    Regression note: two full-suite runs hit `Base.metadata.drop_all`/DELETE timeouts
+    and FK errors from a concurrent session's `pytest` run racing against the same
+    shared `video2book_test` Postgres database (that harness does a real DROP/CREATE
+    + DELETE-per-test reset, not transaction rollback) -- not caused by this change.
+    Verified clean by running against a separate scratch database
+    (`video2book_test_v2work`, created just for this): **120 passed**. `semgrep` on
+    the 2 changed files: 0/290 findings (a 1-finding hit on the full `backend/`
+    scan is in `api/ai_llm_bridge.py`, uncommitted work from that same concurrent
+    session, not part of this diff). `pip-audit`: clean on project dependencies.
 - [ ] Task 2: Backend — `POST /books/{id}/cancel` (P0)
   - Acceptance: cancelling a book in `queued`/`planning`/`outline_ready`/`rendering`
     sets `status="failed"`, `error_message="Cancelled by user"`, and returns 202;
