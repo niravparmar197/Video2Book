@@ -29,7 +29,7 @@
     the 2 changed files: 0/290 findings (a 1-finding hit on the full `backend/`
     scan is in `api/ai_llm_bridge.py`, uncommitted work from that same concurrent
     session, not part of this diff). `pip-audit`: clean on project dependencies.
-- [ ] Task 2: Backend — `POST /books/{id}/cancel` (P0)
+- [x] Task 2: Backend — `POST /books/{id}/cancel` (P0)
   - Acceptance: cancelling a book in `queued`/`planning`/`outline_ready`/`rendering`
     sets `status="failed"`, `error_message="Cancelled by user"`, and returns 202;
     cancelling a `done` or already-`failed` book returns 409 (same pattern as
@@ -37,6 +37,19 @@
     (best-effort — a job already picked up by the worker is left to finish its
     current step, not force-killed); new integration tests cover both paths.
   - Files: backend/api/routers/books.py, backend/tests/integration/test_books_cancel.py
+  - Completed: 2026-09-25 — Added `cancel_run_book()` to `backend/api/queue.py`
+    (`queue.remove(book_id)`, wrapped in try/except in the route so a Redis hiccup
+    doesn't fail the DB status change, which is the part that actually matters) and
+    `POST /{book_id}/cancel` to `backend/api/routers/books.py`, following the same
+    `get_owned_book` + 404/409 pattern as `/retry`.
+    `backend/tests/integration/test_books_cancel.py` (7 tests): 404/401/404-cross-user
+    (matching `/retry`'s conventions), 409 for `done` and already-`failed`, 202 with
+    the right status/error_message for an in-flight book, and a real-Redis integration
+    test asserting the BullMQ job is actually gone after cancelling (via
+    `Job.fromId`, same pattern as `test_queue_enqueue.py`). Full suite against the
+    scratch DB: **128 passed**. `semgrep` clean on the 3 changed files (0/290
+    findings); `pip-audit` clean on project dependencies (same pre-existing `pip`
+    tool advisory as Task 1, unrelated).
 - [ ] Task 3: Frontend — extend `Book` type and `api.ts` for the new fields (P0)
   - Acceptance: `Book` in `src/types.ts` gains `url`, `created_at`,
     `estimated_cost_usd`, `videos: Video[]` (new `Video` type: `video_id`, `title`,

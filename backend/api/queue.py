@@ -34,3 +34,15 @@ async def enqueue_run_book(book_id: str, url: str, phase: str) -> None:
         )
     finally:
         await queue.close()
+
+
+async def cancel_run_book(book_id: str) -> None:
+    """Removes the BullMQ job for `book_id` if it's still queued. Best
+    effort only, by design: a job the worker has already picked up keeps
+    running to its next checkpoint -- this does not interrupt it mid-step
+    (sprints/frontend-v2)."""
+    queue = _make_queue()
+    try:
+        await queue.remove(book_id)
+    finally:
+        await queue.close()

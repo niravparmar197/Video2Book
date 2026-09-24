@@ -16,7 +16,7 @@ from api.config import settings
 from api.db import SessionLocal, get_db
 from api.logging import get_logger
 from api.models import Book, User
-from api.queue import enqueue_run_book
+from api.queue import cancel_run_book, enqueue_run_book
 from api.schemas import BookCreateRequest, BookResponse
 
 router = APIRouter(prefix="/books", tags=["books"])
@@ -84,6 +84,35 @@ async def retry_book(
     logger = get_logger(book_id=book.id, step="retry")
     await enqueue_run_book(book.id, book.url, phase="retry")
     logger.info("retry phase job enqueued")
+
+    return book
+
+
+@router.post("/{book_id}/cancel", response_model=BookResponse, status_code=202)
+async def cancel_book(
+    book_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> Book:
+    book = get_owned_book(db, book_id, user)
+    if book.status not in _IN_FLIGHT_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"book is '{book.status}', not in-flight -- nothing to cancel",
+        )
+
+    book.status = "failed"
+    book.error_message = "Cancelled by user"
+    db.commit()
+    db.refresh(book)
+
+    logger = get_logger(book_id=book.id, step="cancel")
+    try:
+        await cancel_run_book(book.id)
+    except Exception as exc:
+        # Best-effort queue cleanup (see cancel_run_book's docstring) --
+        # the DB status change above is what actually matters here, so a
+        # Redis hiccup doesn't fail the whole cancel request.
+        logger.warning("could not remove queued job for cancelled book", extra={"error": str(exc)})
+    logger.info("book cancelled")
 
     return book
 
