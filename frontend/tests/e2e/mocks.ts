@@ -21,3 +21,21 @@ export async function installApiMocks(page: Page): Promise<void> {
     })
   );
 }
+
+/**
+ * Registers a JSON response for one method + URL glob, layered on top of
+ * installApiMocks()'s safety net. Register the most specific globs last --
+ * Playwright resolves the most-recently-added matching route first.
+ */
+export async function mockJson(
+  page: Page,
+  method: string,
+  urlGlob: string,
+  status: number,
+  body: unknown
+): Promise<void> {
+  await page.route(urlGlob, (route) => {
+    if (route.request().method() !== method) return route.fallback();
+    return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+  });
+}

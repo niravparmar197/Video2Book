@@ -38,7 +38,7 @@
     findings/325 rules); `pip-audit` flags only the ambient `pip` tool itself (24.0,
     pre-existing, unrelated to this change) -- no findings on any project dependency.
 
-- [ ] Task 3: `data-testid`s + E2E test for the login screen (P0)
+- [x] Task 3: `data-testid`s + E2E test for the login screen (P0)
   - Acceptance: `data-testid` on the email input, register submit button, "I have a
     key" tab, paste-key input, paste-key submit, and the issued-key continue button;
     Playwright test covers both the register-then-continue path and the paste-key path,
@@ -46,6 +46,16 @@
     shell; screenshots at `tests/screenshots/task3-step1-login-empty.png` and
     `tests/screenshots/task3-step2-logged-in.png`.
   - Files: src/components/LoginScreen.tsx, tests/e2e/login.spec.ts
+  - Completed: 2026-09-25 — Added `data-testid`s to every interactive element on
+    `LoginScreen` (`login-email-input`, `login-register-submit`, `login-tab-register`,
+    `login-tab-paste`, `login-paste-key-input`, `login-paste-submit`,
+    `login-issued-key`, `login-continue-button`, `login-error`). Added a reusable
+    `mockJson()` helper to `tests/e2e/mocks.ts` (used by this and future tasks) and
+    `tests/e2e/login.spec.ts` (3 tests: register-then-continue, paste-key login, and a
+    failed-registration error path), with screenshots at
+    `tests/screenshots/task3-01-login-empty.png` and `task3-02-logged-in.png`. Full
+    E2E suite (4 tests) + `tsc --noEmit` pass. `semgrep` clean (0/227 rules); `npm
+    audit` clean.
 
 - [ ] Task 4: `data-testid`s + E2E test for submitting a new book (P0)
   - Acceptance: `data-testid` on the URL input and submit button; test mocks
