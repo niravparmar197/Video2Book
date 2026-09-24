@@ -104,13 +104,22 @@
     (with intermittent failures) to a stable ~10s across two consecutive full runs (9
     tests). `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit` clean.
 
-- [ ] Task 7: `data-testid`s + E2E test for done/failed terminal states (P0)
+- [x] Task 7: `data-testid`s + E2E test for done/failed terminal states (P0)
   - Acceptance: `data-testid` on the download button, the retry button, and the error
     message container; one test mocks a `done` book + `GET /books/{id}/pdf` and asserts
     clicking Download triggers a file save; another mocks a `failed` book with an
     `error_message` and asserts it renders, then asserts clicking Retry calls the mocked
     `POST /books/{id}/retry`; screenshots for both states.
   - Files: src/components/BookDetailScreen.tsx, tests/e2e/book-detail-terminal.spec.ts
+  - Completed: 2026-09-25 — Added `book-detail-download`, `book-detail-retry`, and
+    `book-detail-error-message` testids. `tests/e2e/book-detail-terminal.spec.ts`: the
+    done-state test mocks the PDF endpoint with a real `application/pdf` body and
+    asserts a genuine `page.waitForEvent('download')` fires with the right filename
+    (not just that the button exists); the failed-state test asserts the error message
+    text, clicks Retry, and asserts the mocked `POST /books/{id}/retry` was actually
+    called and the error message clears. Full E2E suite (11 tests) stable across
+    repeated runs; `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit`
+    clean.
 
 - [ ] Task 8: `data-testid`s + E2E test for the live progress view (P1)
   - Acceptance: `data-testid` on the current-step label and the completed-steps list;

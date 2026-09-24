@@ -96,6 +96,7 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
             Your book is ready
           </h2>
           <button
+            data-testid="book-detail-download"
             onClick={handleDownload}
             disabled={isDownloading}
             className="py-2.5 px-5 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-md text-title-md font-semibold inline-flex items-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50"
@@ -113,11 +114,15 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
             Something went wrong
           </h2>
           {book.error_message && (
-            <p className="font-body-sm text-body-sm text-on-surface-variant mb-space-sm">
+            <p
+              data-testid="book-detail-error-message"
+              className="font-body-sm text-body-sm text-on-surface-variant mb-space-sm"
+            >
               {book.error_message}
             </p>
           )}
           <button
+            data-testid="book-detail-retry"
             onClick={handleRetry}
             disabled={isRetrying}
             className="py-2.5 px-5 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-md text-title-md font-semibold inline-flex items-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50"
