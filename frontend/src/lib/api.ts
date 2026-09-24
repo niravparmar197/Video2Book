@@ -1,0 +1,147 @@
+import type { Book, Chapter, ChapterEdit, ProgressEvent } from '../types';
+
+const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_KEY_STORAGE_KEY = 'v2b_api_key';
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function getApiKey(): string | null {
+  return localStorage.getItem(API_KEY_STORAGE_KEY);
+}
+
+export function setApiKey(key: string): void {
+  localStorage.setItem(API_KEY_STORAGE_KEY, key);
+}
+
+export function clearApiKey(): void {
+  localStorage.removeItem(API_KEY_STORAGE_KEY);
+}
+
+async function request<T>(
+  path: string,
+  options: { method?: string; body?: unknown; auth?: boolean } = {}
+): Promise<T> {
+  const { method = 'GET', body, auth = true } = options;
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (auth) {
+    const key = getApiKey();
+    if (key) headers['X-API-Key'] = key;
+  }
+
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail ?? detail;
+    } catch {
+      // response wasn't JSON; keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export function registerUser(email: string): Promise<{ user_id: string; api_key: string }> {
+  return request('/users', { method: 'POST', body: { email }, auth: false });
+}
+
+export function createBook(url: string): Promise<Book> {
+  return request('/books/youtube', { method: 'POST', body: { url } });
+}
+
+export function getBook(bookId: string): Promise<Book> {
+  return request(`/books/${bookId}`);
+}
+
+export function getOutline(bookId: string): Promise<Chapter[]> {
+  return request(`/books/${bookId}/outline`);
+}
+
+export function putOutline(bookId: string, edits: ChapterEdit[]): Promise<Book> {
+  return request(`/books/${bookId}/outline`, { method: 'PUT', body: edits });
+}
+
+export function retryBook(bookId: string): Promise<Book> {
+  return request(`/books/${bookId}/retry`, { method: 'POST' });
+}
+
+export async function downloadPdf(bookId: string): Promise<void> {
+  const key = getApiKey();
+  const res = await fetch(`${API_BASE_URL}/books/${bookId}/pdf`, {
+    headers: key ? { 'X-API-Key': key } : {},
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, 'PDF is not available yet');
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = `${bookId}.pdf`;
+  a.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+/**
+ * Consumes the book's SSE progress stream (GET /books/{id}/events).
+ * Calling code owns the AbortController and stops the stream by aborting it.
+ */
+export async function streamEvents(
+  bookId: string,
+  onProgress: (event: ProgressEvent) => void,
+  onTerminal: (status: 'done' | 'failed') => void,
+  signal: AbortSignal
+): Promise<void> {
+  const key = getApiKey();
+  const res = await fetch(`${API_BASE_URL}/books/${bookId}/events`, {
+    headers: key ? { 'X-API-Key': key } : {},
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, 'could not open progress stream');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() ?? '';
+
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n');
+      const eventLine = lines.find((l) => l.startsWith('event: '));
+      const dataLine = lines.find((l) => l.startsWith('data: '));
+      if (!eventLine || !dataLine) continue;
+
+      const event = eventLine.slice('event: '.length).trim();
+      const data = JSON.parse(dataLine.slice('data: '.length));
+
+      if (event === 'progress') onProgress(data as ProgressEvent);
+      else if (event === 'done' || event === 'failed') {
+        onTerminal(event);
+        return;
+      }
+    }
+  }
+}

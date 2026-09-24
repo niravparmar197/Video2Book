@@ -1,0 +1,8 @@
+\chapter*{Glossary}
+\addcontentsline{toc}{chapter}{Glossary}
+
+\begin{description}
+{% for entry in entries %}
+\item[{{ entry.term }}] {{ entry.definition }}
+{% endfor %}
+\end{description}

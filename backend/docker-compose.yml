@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: video2book
+      POSTGRES_PASSWORD: video2book
+      POSTGRES_DB: video2book
+    ports:
+      # host port 5433 (not 5432) to avoid clashing with a locally installed Postgres
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video2book"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  s3mock:
+    # S3-compatible service for local dev/test. MinIO's Docker Hub images
+    # (`minio/minio`, `bitnami/minio`) now require a login to pull, and
+    # `localstack/localstack:latest` quits immediately without a paid
+    # license token -- Adobe's S3Mock (Apache-2.0, genuinely free, no
+    # auth) stands in instead.
+    image: adobe/s3mock:latest
+    # No initialBuckets env var here -- api/storage.py creates the
+    # bucket lazily on first use instead, so nothing depends on getting
+    # that env var name right for this image version.
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/favicon.ico"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

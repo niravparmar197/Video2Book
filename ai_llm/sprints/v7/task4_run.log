@@ -1,0 +1,153 @@
+[download]    1.00KiB at  564.28KiB/s (00:00:00)[download]    3.00KiB at  695.19KiB/s (00:00:00)[download]    7.00KiB at    1.28MiB/s (00:00:00)[download]   15.00KiB at    2.14MiB/s (00:00:00)[download]   17.87KiB at    1.91MiB/s (00:00:00)[download] 100% of   17.87KiB in 00:00:00 at 99.89KiB/s                                                       [download]    1.00KiB at  Unknown B/s (00:00:00)[download]    3.00KiB at    1.94MiB/s (00:00:00)[download]    7.00KiB at    2.74MiB/s (00:00:00)[download]   15.00KiB at    2.84MiB/s (00:00:00)[download]   16.26KiB at    2.52MiB/s (00:00:00)[download] 100% of   16.26KiB in 00:00:00 at 42.54KiB/s                                                       [download]    1.00KiB at  330.89KiB/s (00:00:00)[download]    3.00KiB at  507.93KiB/s (00:00:00)[download]    7.00KiB at 1008.49KiB/s (00:00:00)[download]   15.00KiB at    1.54MiB/s (00:00:00)[download]   31.00KiB at    1.31MiB/s (00:00:00)[download]   58.06KiB at    2.10MiB/s (00:00:00)[download] 100% of   58.06KiB in 00:00:00 at 191.50KiB/s                                                        [download]    1.00KiB at  629.68KiB/s (00:00:00)[download]    3.00KiB at  913.06KiB/s (00:00:00)[download]    7.00KiB at    1.39MiB/s (00:00:00)[download]   15.00KiB at    1.22MiB/s (00:00:00)[download]   31.00KiB at    1.35MiB/s (00:00:00)[download]   63.00KiB at    1.13MiB/s (00:00:00)[download]   96.03KiB at  800.61KiB/s (00:00:00)[download] 100% of   96.03KiB in 00:00:00 at 149.94KiB/s                                                        [download]    1.00KiB at  150.82KiB/s (00:00:00)[download]    3.00KiB at  346.67KiB/s (00:00:00)[download]    7.00KiB at  759.56KiB/s (00:00:00)[download]   15.00KiB at    1.43MiB/s (00:00:00)[download]   31.00KiB at    2.56MiB/s (00:00:00)[download]   63.00KiB at    4.59MiB/s (00:00:00)[download]   96.28KiB at    4.18MiB/s (00:00:00)[download] 100% of   96.28KiB in 00:00:00 at 195.80KiB/s                                                        [download]    1.00KiB at  991.09KiB/s (00:00:10)[download]    3.00KiB at    1.46MiB/s (00:00:10)[download]    7.00KiB at    1.50MiB/s (00:00:10)[download]   15.00KiB at    3.21MiB/s (00:00:10)[download]   31.00KiB at    1.80MiB/s (00:00:10)[download]   63.00KiB at    1.94MiB/s (00:00:10)[download]   66.05KiB at    1.60MiB/s (00:00:10)[download] 100% of   66.05KiB in 00:00:10 at 6.45KiB/s                                                      stream-mode scene detection failed for https://www.youtube.com/watch?v=IN2XmBhILt4 [0.5, 1052.617): Command '['ffmpeg', '-ss', '0.5', '-i', 'https://rr4---sn-gwpa-5hqek.googlevideo.com/videoplayback?expire=1790280634&ei=Wi-1auKSBOTZ1_oP88u9kQY&ip=2409%3A40c1%3A5466%3Acac3%3A2c50%3A8c91%3A4111%3A874f&id=o-AJ-g65VZHZ2mMV2o32pKGB57upWUQ1NQMQm1Y88eu0ov&itag=135&source=youtube&requiressl=yes&xpc=EgVo2aDSNQ%3D%3D&cps=358&met=1790259034%2C&mh=2Q&mm=31%2C29&mn=sn-gwpa-5hqek%2Csn-gwpa-cvhee&ms=au%2Crdu&mv=m&mvi=4&pl=42&rms=au%2Cau&initcwndbps=760000&bui=AWzQHwrvPpqX6PYkUQFFQ4G2Qh2Q-1YmfPG7hupqAXmECNcQebpjGhlBFnkExzhAAUQQPV7l19I5m1mo&spc=I-rgIT63DWz49BXAyjudnHWA4GDM4lyF62OhFMHHc_9XeZdaGPSMsJi37Q&vprv=1&svpuc=1&mime=video%2Fmp4&rqh=1&gir=yes&clen=14314491&dur=1053.010&lmt=1754968597931546&mt=1790258471&fvip=5&keepalive=yes&fexp=51565116%2C52178456&c=VISIONOS&txp=6318224&sparams=expire%2Cei%2Cip%2Cid%2Citag%2Csource%2Crequiressl%2Cxpc%2Cbui%2Cspc%2Cvprv%2Csvpuc%2Cmime%2Crqh%2Cgir%2Cclen%2Cdur%2Clmt&sig=AE0s2JYwRAIgDygEpbaVPJUWFYLbcVo_qwkYRrKXTIAuDXf0rzJ9w30CICL5z57EQqATB0wEIAicoeMVwpYOa2QW1rfNGotC62J1&lsparams=cps%2Cmet%2Cmh%2Cmm%2Cmn%2Cms%2Cmv%2Cmvi%2Cpl%2Crms%2Cinitcwndbps&lsig=APaTxxMwRgIhAJIbPQ44YTE4lH_mEU8mhIMpm5C96dEoBggLeF17ZSooAiEA5MtBC08nNwxOJ5n5FVxVvkevRxSokcHUqPh4g3mLfFk%3D', '-t', '1052.117', '-vf', "select='gt(scene,0.4)',showinfo,format=yuvj420p", '-fps_mode', 'vfr', '-qscale:v', '2', 'output\\https-www-youtube-com-playlist-list-PLjUC8HjyxGTSrn4cZEw9Uw8R0ST\\work\\frames\\_scenes\\IN2XmBhILt4_000\\scene_%04d.jpg']' timed out after 300 seconds -- falling back to a chunk-scoped download
+[download] 100% of   19.99MiB in 00:10:04 at 33.89KiB/s                                                       Direct use of automatic function calling (AFC) in Models.generate_content is not recommended. Instead, we recommend to use AFC in Chat.send_message. Similarly, direct use of AFC in Models.generate_content_stream is not recommended. Instead, we recommend to use AFC in Chat.send_message_stream.
+topics extraction for 83LYR-1IcjA chunk 0 produced no usable JSON array after a retry; continuing with an empty topics list
+topics extraction for KpKog-L9veg chunk 0 produced no usable JSON array after a retry; continuing with an empty topics list
+Traceback (most recent call last):
+  File "F:\morden system desing\Video2Book\ai_llm\app\llm.py", line 122, in _call_once
+    return _extract_text(client.invoke(prompt))
+                         ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 488, in invoke
+    self.generate_prompt(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 1877, in generate_prompt
+    return self.generate(prompt_messages, stop=stop, callbacks=callbacks, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 1684, in generate
+    self._generate_with_cache(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 2022, in _generate_with_cache
+    result = self._generate(
+             ^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_nvidia_ai_endpoints\chat_models.py", line 706, in _generate
+    response = self._client.get_req(payload=payload, extra_headers=extra_headers)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_nvidia_ai_endpoints\_common.py", line 612, in get_req
+    response, session = self._post(
+                        ^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_nvidia_ai_endpoints\_common.py", line 421, in _post
+    self._try_raise(response)
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_nvidia_ai_endpoints\_common.py", line 526, in _try_raise
+    raise Exception(message) from None
+Exception: [503] {'message': 'Service temporarily overloaded', 'type': 'Service Unavailable', 'code': 503}
+{'error': {'message': 'Service temporarily overloaded', 'type': 'Service Unavailable', 'code': 503}, 'status': 503}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_google_genai\chat_models.py", line 4177, in _generate
+    response: GenerateContentResponse = self.client.models.generate_content(
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\models.py", line 6251, in generate_content
+    response = self._generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\models.py", line 4688, in _generate_content
+    response = self._api_client.request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\_api_client.py", line 1750, in request
+    response = self._request(http_request, http_options, stream=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\_api_client.py", line 1535, in _request
+    return retry(self._request_once, http_request, stream)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\tenacity\__init__.py", line 470, in __call__
+    do = self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\tenacity\__init__.py", line 371, in iter
+    result = action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\tenacity\__init__.py", line 473, in __call__
+    result = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\_api_client.py", line 1514, in _request_once
+    errors.APIError.raise_for_response(response)
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\errors.py", line 173, in raise_for_response
+    cls.raise_error(response.status_code, response_json, response)
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\google\genai\errors.py", line 202, in raise_error
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash\nPlease retry in 55.258648786s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3.8-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '55s'}]}}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "F:\morden system desing\Video2Book\ai_llm\app\llm.py", line 127, in _call_once
+    return _extract_text(client.invoke(prompt))
+                         ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_google_genai\chat_models.py", line 3578, in invoke
+    return super().invoke(input, config, stop=stop, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 488, in invoke
+    self.generate_prompt(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 1877, in generate_prompt
+    return self.generate(prompt_messages, stop=stop, callbacks=callbacks, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 1684, in generate
+    self._generate_with_cache(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_core\language_models\chat_models.py", line 2022, in _generate_with_cache
+    result = self._generate(
+             ^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_google_genai\chat_models.py", line 4181, in _generate
+    _handle_client_error(e, request)
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langchain_google_genai\chat_models.py", line 326, in _handle_client_error
+    raise error_type(msg) from e
+langchain_google_genai.chat_models.GoogleRateLimitError: Error calling model 'gemini-3.8-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash\nPlease retry in 55.258648786s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3.8-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '55s'}]}}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "F:\morden system desing\Video2Book\ai_llm\app\cli.py", line 107, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\cli.py", line 101, in main
+    pdf_path = run_book(args.url, output_dir, force=args.force)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\graph.py", line 577, in run_book
+    final_state = graph.invoke(
+                  ^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\pregel\main.py", line 3913, in invoke
+    for chunk in self.stream(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\pregel\main.py", line 2967, in stream
+    for _ in runner.tick(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\pregel\_runner.py", line 207, in tick
+    run_with_retry(
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\pregel\_retry.py", line 617, in run_with_retry
+    return task.proc.invoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\_internal\_runnable.py", line 707, in invoke
+    input = context.run(step.invoke, input, config, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\asus\AppData\Roaming\Python\Python312\site-packages\langgraph\_internal\_runnable.py", line 447, in invoke
+    ret = self.func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\graph.py", line 177, in _topics_node
+    run_cached(output_path, lambda cp=chunk_path: run_topics(cp, state["output_dir"]))
+  File "F:\morden system desing\Video2Book\ai_llm\app\cache.py", line 22, in run_cached
+    compute()
+  File "F:\morden system desing\Video2Book\ai_llm\app\graph.py", line 177, in <lambda>
+    run_cached(output_path, lambda cp=chunk_path: run_topics(cp, state["output_dir"]))
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\nodes\topics.py", line 94, in run_topics
+    topics = _parse_topics(call_writer(prompt))
+                           ^^^^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\llm.py", line 166, in call_writer
+    raise last_error  # type: ignore[misc] # MAX_ATTEMPTS >= 1 guarantees this is set
+    ^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\llm.py", line 159, in call_writer
+    return _call_once(prompt, settings, factory, sleep, clock)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\morden system desing\Video2Book\ai_llm\app\llm.py", line 129, in _call_once
+    raise LLMProviderError(
+app.llm.LLMProviderError: both providers failed: primary=Exception("[503] {'message': 'Service temporarily overloaded', 'type': 'Service Unavailable', 'code': 503}\n{'error': {'message': 'Service temporarily overloaded', 'type': 'Service Unavailable', 'code': 503}, 'status': 503}") fallback=GoogleRateLimitError("Error calling model 'gemini-3.8-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash\\nPlease retry in 55.258648786s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3.8-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '55s'}]}}")
+During task with name 'topics' and id '4db26eb7-3b1c-d8bb-fee7-083b3e197557'
+EXIT_CODE=1
+END: 2026-09-24 20:32:06 IST

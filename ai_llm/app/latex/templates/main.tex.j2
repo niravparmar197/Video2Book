@@ -1,0 +1,44 @@
+\documentclass[11pt]{report}
+\usepackage{fontspec}
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\usepackage{graphicx}
+\usepackage{imakeidx}
+\makeindex
+
+{% if volume_number %}
+\title{Video2Book --- Volume {{ volume_number }}}
+{% else %}
+\title{Video2Book}
+{% endif %}
+\author{Video2Book}
+\date{}
+
+\begin{document}
+\maketitle
+
+{% if preface_paragraphs %}
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+{% for paragraph in preface_paragraphs %}
+{{ paragraph }}
+
+{% endfor %}
+{% endif %}
+\tableofcontents
+
+{% for chapter_id in chapter_ids %}
+\input{ {{- chapter_id -}} }
+{% endfor %}
+
+{% if has_glossary %}
+\input{glossary}
+{% endif %}
+
+\printindex
+
+{% if has_topic_index %}
+\input{topic_index}
+{% endif %}
+
+\end{document}

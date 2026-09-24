@@ -1,0 +1,82 @@
+"""S3 (or an S3-compatible service, e.g. the local S3Mock container)
+storage for rendered PDFs. `Book.pdf_path` holds the object key this
+module returns, not a local filesystem path, once a render succeeds.
+"""
+
+from pathlib import Path
+
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
+
+from api.config import settings
+
+_BUCKET_ALREADY_EXISTS_CODES = {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}
+
+
+def _client():
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+        # Explicit timeouts *and* a capped retry count -- boto3's default
+        # retry policy re-attempts a failed connect several times with
+        # backoff, so even a 2s connect_timeout can add up to a minute-plus
+        # hang against an unreachable host without this (see sprints/v2
+        # Task 4's psycopg connect_timeout fix for the same class of issue).
+        config=Config(
+            signature_version="s3v4",
+            connect_timeout=2,
+            read_timeout=5,
+            retries={"max_attempts": 2},
+        ),
+    )
+
+
+def _ensure_bucket(client) -> None:
+    try:
+        client.head_bucket(Bucket=settings.s3_bucket)
+    except ClientError:
+        try:
+            client.create_bucket(Bucket=settings.s3_bucket)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in _BUCKET_ALREADY_EXISTS_CODES:
+                raise
+
+
+def pdf_key(book_id: str) -> str:
+    return f"{book_id}/book.pdf"
+
+
+def upload_pdf(book_id: str, local_path: str | Path) -> str:
+    """Uploads `local_path` to S3 and returns the object key."""
+    client = _client()
+    _ensure_bucket(client)
+    key = pdf_key(book_id)
+    client.upload_file(str(local_path), settings.s3_bucket, key)
+    return key
+
+
+def presigned_url(key: str, expires_in: int = 900) -> str:
+    client = _client()
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.s3_bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )
+
+
+def delete_pdf(key: str) -> None:
+    client = _client()
+    client.delete_object(Bucket=settings.s3_bucket, Key=key)
+
+
+def check_s3() -> bool:
+    try:
+        _client().list_buckets()
+        return True
+    except Exception:
+        return False

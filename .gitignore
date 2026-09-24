@@ -1,0 +1,24 @@
+# Node / frontend
+node_modules/
+dist/
+test-results/
+playwright-report/
+.env
+.env.local
+
+# Python / backend & ai_llm
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Runtime output (video downloads, generated PDFs, checkpoints)
+backend/output/
+backend/test_output/
+ai_llm/output/
+
+# OS / editor
+.DS_Store
+Thumbs.db
