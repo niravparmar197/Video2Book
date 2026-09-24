@@ -43,7 +43,7 @@ export const MyBooksScreen: React.FC<MyBooksScreenProps> = ({ onSelectBook }) =>
   if (books.length === 0) {
     return (
       <div className="pt-8 text-center">
-        <p className="font-body-md text-body-md text-on-surface-variant">
+        <p data-testid="my-books-empty" className="font-body-md text-body-md text-on-surface-variant">
           No books yet. Start one from the "New Book" tab.
         </p>
       </div>
@@ -59,12 +59,14 @@ export const MyBooksScreen: React.FC<MyBooksScreenProps> = ({ onSelectBook }) =>
         {books.map((book) => (
           <button
             key={book.id}
+            data-testid={`my-books-row-${book.id}`}
             onClick={() => onSelectBook(book.id)}
             className="text-left bg-surface-container-lowest rounded-xl p-space-md shadow-sm border border-[#e3e2df]/60 hover:border-[#c1c8c3] transition-colors"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-[12px] text-on-surface-variant truncate">{book.id}</span>
               <span
+                data-testid={`my-books-status-${book.id}`}
                 className={`px-2 py-0.5 rounded-full font-label-sm text-label-sm font-medium ${
                   book.status === 'done'
                     ? 'bg-secondary-container text-on-secondary-fixed'

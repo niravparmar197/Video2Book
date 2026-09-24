@@ -38,6 +38,11 @@ export async function loginAs(page: Page, apiKey = 'test-api-key'): Promise<void
   await page.reload();
 }
 
+/** Seeds the client-side "my books" index MyBooksScreen reads from. */
+export async function seedTrackedBooks(page: Page, ids: string[]): Promise<void> {
+  await page.evaluate((ids) => localStorage.setItem('v2b_my_book_ids', JSON.stringify(ids)), ids);
+}
+
 export async function mockJson(
   page: Page,
   method: string,

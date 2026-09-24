@@ -72,11 +72,17 @@
     rules, verified new file is actually scanned via a direct single-file run); `npm
     audit` clean.
 
-- [ ] Task 5: `data-testid`s + E2E test for the My Books list (P0)
+- [x] Task 5: `data-testid`s + E2E test for the My Books list (P0)
   - Acceptance: `data-testid` on each book row and its status badge; test covers the
     empty state (no tracked ids) and a populated state (mocked tracked ids + mocked
     `GET /books/{id}` per id) showing correct status labels; screenshots for both states.
   - Files: src/components/MyBooksScreen.tsx, tests/e2e/my-books.spec.ts
+  - Completed: 2026-09-25 — Added `my-books-empty`, `my-books-row-{id}`, and
+    `my-books-status-{id}` testids; also added `nav-tab-{new,books}` to `BottomNav`
+    (needed to switch tabs from a test). Added `seedTrackedBooks()` to
+    `tests/e2e/mocks.ts`. `tests/e2e/my-books.spec.ts`: 2 tests (empty state, populated
+    state with two books' live statuses). Full E2E suite (8 tests) + `tsc --noEmit`
+    pass. `semgrep` clean (0/227 rules); `npm audit` clean.
 
 - [ ] Task 6: `data-testid`s + E2E test for the outline editor (P0)
   - Acceptance: `data-testid` on each chapter card, its lock toggle, its skip toggle,
