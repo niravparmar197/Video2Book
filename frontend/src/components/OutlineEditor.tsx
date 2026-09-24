@@ -64,6 +64,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
           .map((chapter) => (
             <article
               key={chapter.id}
+              data-testid={`outline-chapter-${chapter.id}`}
               className={`bg-surface-container-lowest rounded-xl p-space-md shadow-sm border border-[#e3e2df]/60 ${
                 chapter.skip ? 'opacity-60' : ''
               }`}
@@ -91,6 +92,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
 
               <div className="flex items-center gap-2 mt-space-sm">
                 <button
+                  data-testid={`outline-lock-${chapter.id}`}
                   onClick={() => toggle(chapter.id, 'locked')}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-label-sm text-label-sm transition-colors ${
                     chapter.locked
@@ -105,6 +107,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
                 </button>
 
                 <button
+                  data-testid={`outline-skip-${chapter.id}`}
                   onClick={() => toggle(chapter.id, 'skip')}
                   className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-surface hover:bg-surface-container text-on-surface-variant font-label-sm text-label-sm transition-colors"
                 >
@@ -123,6 +126,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
       <div className="fixed bottom-16 left-0 right-0 z-40 px-gutter-mobile py-space-sm bg-surface/90 backdrop-blur-md border-t border-[#e3e2df]/60">
         <div className="max-w-lg mx-auto">
           <button
+            data-testid="outline-save"
             onClick={handleSave}
             disabled={isSaving}
             className="w-full py-3 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-md text-title-md font-semibold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50"

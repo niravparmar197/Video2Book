@@ -20,6 +20,13 @@ export async function installApiMocks(page: Page): Promise<void> {
       body: JSON.stringify({ detail: `unmocked endpoint in test: ${route.request().method()} ${route.request().url()}` }),
     })
   );
+
+  // index.html pulls Google Fonts over the real network. Under several
+  // parallel workers that request queues up and page.screenshot()'s
+  // internal "wait for fonts to load" step can exceed the test timeout --
+  // block it so tests fall back to system fonts instantly instead of
+  // depending on an external CDN's latency.
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (route) => route.abort());
 }
 
 /**

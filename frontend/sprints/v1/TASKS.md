@@ -84,13 +84,25 @@
     state with two books' live statuses). Full E2E suite (8 tests) + `tsc --noEmit`
     pass. `semgrep` clean (0/227 rules); `npm audit` clean.
 
-- [ ] Task 6: `data-testid`s + E2E test for the outline editor (P0)
+- [x] Task 6: `data-testid`s + E2E test for the outline editor (P0)
   - Acceptance: `data-testid` on each chapter card, its lock toggle, its skip toggle,
     and the save button; test mocks `GET /books/{id}/outline` with 2+ chapters, toggles
     skip on one and locked on another, saves, and asserts the mocked
     `PUT /books/{id}/outline` received the correct `ChapterEdit[]` payload; screenshots
     before and after toggling.
   - Files: src/components/OutlineEditor.tsx, tests/e2e/outline-editor.spec.ts
+  - Completed: 2026-09-25 — Added `outline-chapter-{id}`, `outline-lock-{id}`,
+    `outline-skip-{id}`, and `outline-save` testids. `tests/e2e/outline-editor.spec.ts`:
+    submits a book that resolves straight to `outline_ready`, toggles skip on one
+    chapter and lock on another, saves, and asserts the mocked `PUT`'s JSON body
+    matches the expected `ChapterEdit[]` exactly, with screenshots before/after
+    toggling. Also found and fixed a real flake here: `page.screenshot()`'s "wait for
+    fonts to load" step was hanging on the real Google Fonts network call under
+    parallel workers, timing out 3 unrelated tests in the full suite -- added a route
+    block for `fonts.(googleapis|gstatic).com` to `installApiMocks()` in
+    `tests/e2e/mocks.ts` so all tests are fully hermetic; full suite dropped from ~50s
+    (with intermittent failures) to a stable ~10s across two consecutive full runs (9
+    tests). `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit` clean.
 
 - [ ] Task 7: `data-testid`s + E2E test for done/failed terminal states (P0)
   - Acceptance: `data-testid` on the download button, the retry button, and the error
