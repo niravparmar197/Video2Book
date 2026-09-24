@@ -75,7 +75,9 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
 
   return (
     <div className="w-full pb-24">
-      <p className="font-mono text-[12px] text-on-surface-variant mb-space-md truncate">{book.id}</p>
+      <p data-testid="book-detail-id" className="font-mono text-[12px] text-on-surface-variant mb-space-md truncate">
+        {book.id}
+      </p>
 
       {(book.status === 'queued' || book.status === 'planning' || book.status === 'rendering') && (
         <ProgressView bookId={bookId} onTerminal={refetch} />

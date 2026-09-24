@@ -27,6 +27,17 @@ export async function installApiMocks(page: Page): Promise<void> {
  * installApiMocks()'s safety net. Register the most specific globs last --
  * Playwright resolves the most-recently-added matching route first.
  */
+/**
+ * Skips the login screen for tests that only care about a screen behind
+ * it: sets the api key localStorage's LoginScreen would have set, then
+ * reloads so App.tsx picks it up on mount.
+ */
+export async function loginAs(page: Page, apiKey = 'test-api-key'): Promise<void> {
+  await page.goto('/');
+  await page.evaluate((key) => localStorage.setItem('v2b_api_key', key), apiKey);
+  await page.reload();
+}
+
 export async function mockJson(
   page: Page,
   method: string,

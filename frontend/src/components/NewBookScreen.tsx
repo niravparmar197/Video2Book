@@ -38,6 +38,7 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-space-sm">
         <input
+          data-testid="new-book-url-input"
           type="url"
           required
           placeholder="https://www.youtube.com/watch?v=... or /playlist?list=..."
@@ -46,6 +47,7 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
           className="w-full px-3 py-2.5 bg-white border border-[#c1c8c3] rounded-lg text-body-md text-primary focus:outline-none focus:border-[#006c49]"
         />
         <button
+          data-testid="new-book-submit"
           type="submit"
           disabled={isSubmitting}
           className="w-full py-3 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-md text-title-md font-semibold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50"
@@ -55,7 +57,11 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
         </button>
       </form>
 
-      {error && <p className="mt-space-sm font-body-sm text-body-sm text-error">{error}</p>}
+      {error && (
+        <p data-testid="new-book-error" className="mt-space-sm font-body-sm text-body-sm text-error">
+          {error}
+        </p>
+      )}
     </div>
   );
 };

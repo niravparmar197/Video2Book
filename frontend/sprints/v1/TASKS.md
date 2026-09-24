@@ -57,11 +57,20 @@
     E2E suite (4 tests) + `tsc --noEmit` pass. `semgrep` clean (0/227 rules); `npm
     audit` clean.
 
-- [ ] Task 4: `data-testid`s + E2E test for submitting a new book (P0)
+- [x] Task 4: `data-testid`s + E2E test for submitting a new book (P0)
   - Acceptance: `data-testid` on the URL input and submit button; test mocks
     `POST /books/youtube` returning a `queued` book, submits a URL, and asserts the app
     navigates to that book's detail view; screenshots before and after submit.
   - Files: src/components/NewBookScreen.tsx, tests/e2e/new-book.spec.ts
+  - Completed: 2026-09-25 — Added `data-testid`s (`new-book-url-input`,
+    `new-book-submit`, `new-book-error`) and a `book-detail-id` testid on
+    `BookDetailScreen` (needed to assert navigation landed on the right book).
+    Added a `loginAs()` helper to `tests/e2e/mocks.ts` (seeds `localStorage`'s API key
+    to skip the login screen -- reused by Tasks 5-8). `tests/e2e/new-book.spec.ts`: 2
+    tests (successful submit navigates to book detail; a 429 in-flight-limit error
+    renders). Full E2E suite (6 tests) + `tsc --noEmit` pass. `semgrep` clean (0/227
+    rules, verified new file is actually scanned via a direct single-file run); `npm
+    audit` clean.
 
 - [ ] Task 5: `data-testid`s + E2E test for the My Books list (P0)
   - Acceptance: `data-testid` on each book row and its status badge; test covers the
