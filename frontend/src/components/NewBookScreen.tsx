@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { createBook, ApiError } from '../lib/api';
 import { addTrackedBookId } from '../lib/myBooks';
+import { StateMessage } from './StateMessage';
 
 interface NewBookScreenProps {
   onBookCreated: (bookId: string) => void;
@@ -57,11 +58,7 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
         </button>
       </form>
 
-      {error && (
-        <p data-testid="new-book-error" className="mt-space-sm font-body-sm text-body-sm text-error">
-          {error}
-        </p>
-      )}
+      {error && <StateMessage variant="error" message={error} testId="new-book-error" />}
     </div>
   );
 };

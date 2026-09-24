@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { getOutline, putOutline, ApiError } from '../lib/api';
 import { Chapter, ChapterEdit } from '../types';
+import { StateMessage } from './StateMessage';
 
 interface OutlineEditorProps {
   bookId: string;
@@ -41,11 +42,11 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
   };
 
   if (error && !chapters) {
-    return <p className="font-body-sm text-body-sm text-error pt-4">{error}</p>;
+    return <StateMessage variant="error" message={error} />;
   }
 
   if (!chapters) {
-    return <p className="font-body-sm text-body-sm text-on-surface-variant pt-4">Loading outline...</p>;
+    return <StateMessage variant="loading" message="Loading outline..." />;
   }
 
   return (
@@ -121,7 +122,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
           ))}
       </div>
 
-      {error && <p className="mt-space-sm font-body-sm text-body-sm text-error">{error}</p>}
+      {error && <StateMessage variant="error" message={error} />}
 
       <div className="fixed bottom-16 left-0 right-0 z-40 px-gutter-mobile py-space-sm bg-surface/90 backdrop-blur-md border-t border-[#e3e2df]/60">
         <div className="max-w-lg mx-auto">

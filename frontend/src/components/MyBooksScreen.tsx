@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { getBook } from '../lib/api';
 import { getTrackedBookIds } from '../lib/myBooks';
 import { Book } from '../types';
+import { StateMessage } from './StateMessage';
 
 interface MyBooksScreenProps {
   onSelectBook: (bookId: string) => void;
@@ -37,16 +38,16 @@ export const MyBooksScreen: React.FC<MyBooksScreenProps> = ({ onSelectBook }) =>
   }, []);
 
   if (isLoading) {
-    return <p className="font-body-sm text-body-sm text-on-surface-variant pt-4">Loading...</p>;
+    return <StateMessage variant="loading" message="Loading your books..." />;
   }
 
   if (books.length === 0) {
     return (
-      <div className="pt-8 text-center">
-        <p data-testid="my-books-empty" className="font-body-md text-body-md text-on-surface-variant">
-          No books yet. Start one from the "New Book" tab.
-        </p>
-      </div>
+      <StateMessage
+        variant="empty"
+        message='No books yet. Start one from the "New Book" tab.'
+        testId="my-books-empty"
+      />
     );
   }
 

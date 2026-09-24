@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { streamEvents } from '../lib/api';
 import { ProgressEvent } from '../types';
+import { StateMessage } from './StateMessage';
 
 interface ProgressViewProps {
   bookId: string;
@@ -53,7 +54,7 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ bookId, onTerminal }
           )}
         </div>
       ) : (
-        <p className="font-body-sm text-body-sm text-on-surface-variant">Connecting...</p>
+        <StateMessage variant="loading" message="Connecting..." />
       )}
     </div>
   );

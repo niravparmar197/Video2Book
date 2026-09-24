@@ -3,6 +3,7 @@ import { getBook, retryBook, downloadPdf, ApiError } from '../lib/api';
 import { Book } from '../types';
 import { OutlineEditor } from './OutlineEditor';
 import { ProgressView } from './ProgressView';
+import { StateMessage } from './StateMessage';
 
 interface BookDetailScreenProps {
   bookId: string;
@@ -66,11 +67,11 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
   };
 
   if (error && !book) {
-    return <p className="font-body-sm text-body-sm text-error pt-4">{error}</p>;
+    return <StateMessage variant="error" message={error} />;
   }
 
   if (!book) {
-    return <p className="font-body-sm text-body-sm text-on-surface-variant pt-4">Loading...</p>;
+    return <StateMessage variant="loading" message="Loading..." />;
   }
 
   return (
@@ -133,7 +134,7 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
         </div>
       )}
 
-      {error && <p className="mt-space-sm font-body-sm text-body-sm text-error">{error}</p>}
+      {error && <StateMessage variant="error" message={error} />}
     </div>
   );
 };

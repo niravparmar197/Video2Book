@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { registerUser, setApiKey, ApiError } from '../lib/api';
+import { StateMessage } from './StateMessage';
 
 interface LoginScreenProps {
   onLoggedIn: () => void;
@@ -137,11 +138,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoggedIn }) => {
         </form>
       )}
 
-      {error && (
-        <p data-testid="login-error" className="mt-space-sm font-body-sm text-body-sm text-error">
-          {error}
-        </p>
-      )}
+      {error && <StateMessage variant="error" message={error} testId="login-error" />}
     </div>
   );
 };

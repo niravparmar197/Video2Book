@@ -139,13 +139,30 @@
     hand-off to the terminal UI. Full E2E suite (13 tests) stable across repeated
     runs; `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit` clean.
 
-- [ ] Task 9: Shared loading/empty/error state components (P1)
+- [x] Task 9: Shared loading/empty/error state components (P1)
   - Acceptance: a single `src/components/StateMessage.tsx` (or equivalent) used by
     every screen for its loading spinner, empty state, and error banner, replacing the
     current ad-hoc plain-`<p>` messages; no visual layout shift when a screen moves
     from loading to loaded; existing E2E tests from Tasks 3-8 still pass unmodified.
   - Files: src/components/StateMessage.tsx, src/components/*.tsx (loading/error call
     sites)
+  - Completed: 2026-09-25 — Added `src/components/StateMessage.tsx` (variants
+    `loading`/`empty`/`error`, plus an optional `testId` override so existing
+    `data-testid`s like `login-error`/`new-book-error`/`my-books-empty` keep working
+    unchanged). The `loading`/`empty` variants get a centered icon+message block; the
+    `error` variant deliberately stays plain text with no icon, because Material
+    Symbols renders via a font ligature and an icon sibling would leak its glyph text
+    into the element's text content and break exact-text assertions like
+    `toHaveText('email already registered')`. Wired into all 6 places that had ad-hoc
+    messages: `LoginScreen`, `NewBookScreen`, `MyBooksScreen` (loading + empty),
+    `BookDetailScreen` (loading, load-error, inline error), `OutlineEditor` (loading,
+    load-error, inline error), `ProgressView` ("Connecting..."). New
+    `tests/e2e/state-message.spec.ts` (3 tests): a delayed mock to observe the loading
+    variant before it resolves, the empty state's `data-variant="empty"`, and an error
+    banner's exact text + `data-variant="error"`. Full E2E suite (16 tests) passes with
+    every pre-existing spec file completely unmodified -- the explicit regression
+    check this task's acceptance calls for. `tsc --noEmit` clean. `semgrep` clean
+    (0/227 rules); `npm audit` clean.
 
 - [ ] Task 10: Mobile responsiveness pass at 375px width (P2)
   - Acceptance: a Playwright test sets a 375x667 viewport and walks login → new book →
