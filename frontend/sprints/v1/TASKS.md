@@ -1,6 +1,6 @@
 # Sprint v1 — Tasks
 
-## Status: In Progress
+## Status: Complete
 
 - [x] Task 1: Playwright E2E harness with a mocked backend (P0)
   - Acceptance: `@playwright/test` installed; `playwright.config.ts` runs against
@@ -164,10 +164,24 @@
     check this task's acceptance calls for. `tsc --noEmit` clean. `semgrep` clean
     (0/227 rules); `npm audit` clean.
 
-- [ ] Task 10: Mobile responsiveness pass at 375px width (P2)
+- [x] Task 10: Mobile responsiveness pass at 375px width (P2)
   - Acceptance: a Playwright test sets a 375x667 viewport and walks login → new book →
     my books → outline editor, asserting no horizontal scroll (`document.body
     .scrollWidth <= 375`) and that every button/input is fully visible in the viewport;
     any clipped element found is fixed in the corresponding component's Tailwind
     classes.
   - Files: tests/e2e/responsive.spec.ts, src/components/*.tsx (layout fixes as needed)
+  - Completed: 2026-09-25 — `tests/e2e/responsive.spec.ts` walks login → new book →
+    my books (empty state) → outline editor at a 375x667 viewport, asserting
+    `document.documentElement.scrollWidth <= 375` at each step and that every
+    interactive `data-testid` element's bounding box is fully within `[0, 375]`. Found
+    a real overflow on first run (383px, not a test bug): `OutlineEditor`'s lock/skip
+    button row (`flex items-center gap-2`, no wrap) doesn't fit both buttons side by
+    side once the lock button reads "Unlocked" -- confirmed with a throwaway debug
+    script that queried every element's `getBoundingClientRect()` for the actual
+    offending node before fixing it. Fix: added `flex-wrap` to that row in
+    `src/components/OutlineEditor.tsx`, verified visually via
+    `tests/screenshots/task10-03-outline-mobile.png`. Full E2E suite (17 tests)
+    passes; `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit` clean.
+
+All 10 sprint v1 tasks complete.

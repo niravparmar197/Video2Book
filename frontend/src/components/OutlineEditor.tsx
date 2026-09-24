@@ -91,7 +91,7 @@ export const OutlineEditor: React.FC<OutlineEditorProps> = ({ bookId, onSaved })
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 mt-space-sm">
+              <div className="flex items-center flex-wrap gap-2 mt-space-sm">
                 <button
                   data-testid={`outline-lock-${chapter.id}`}
                   onClick={() => toggle(chapter.id, 'locked')}
