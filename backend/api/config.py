@@ -38,5 +38,10 @@ class Settings:
 
     events_poll_seconds: float = float(os.environ.get("EVENTS_POLL_SECONDS", "2"))
 
+    # The frontend/ dev server's origin -- browsers block cross-origin
+    # fetch() calls (frontend on :3000, this API on :8000) unless the
+    # server explicitly allows it via CORS.
+    frontend_origin: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
+
 
 settings = Settings()

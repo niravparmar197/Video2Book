@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.checkpointer import ensure_checkpoint_tables
+from api.config import settings
 from api.error_tracking import capture_exception_with_context, init_error_tracking
 from api.logging import configure_logging, get_logger
 from api.routers.books import router as books_router
@@ -14,6 +16,13 @@ init_error_tracking()
 ensure_checkpoint_tables()
 
 app = FastAPI(title="Video2Book API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_origin],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(books_router)
 app.include_router(health_router)
 app.include_router(outline_router)

@@ -20,13 +20,23 @@
     `npm audit` (0 vulnerabilities) all clean. Not committed — this directory has no
     `.git` (confirmed via `git status`); ask the user before initializing one.
 
-- [ ] Task 2: Add CORS middleware to the backend for the frontend dev origin (P0)
+- [x] Task 2: Add CORS middleware to the backend for the frontend dev origin (P0)
   - Acceptance: `backend/api/main.py` adds `CORSMiddleware` allowing the origin from a
     new `FRONTEND_ORIGIN` setting (default `http://localhost:3000`) in
     `backend/api/config.py`; `curl -H "Origin: http://localhost:3000" -i
     http://localhost:8000/health` returns an `Access-Control-Allow-Origin` header;
     existing backend test suite still passes.
   - Files: backend/api/main.py, backend/api/config.py
+  - Completed: 2026-09-25 — Added `Settings.frontend_origin` (env `FRONTEND_ORIGIN`,
+    default `http://localhost:3000`) and wired `CORSMiddleware` into
+    `backend/api/main.py`. New `backend/tests/integration/test_cors.py` (3 tests:
+    preflight allowed, actual request echoes the header, an unlisted origin gets no
+    CORS headers) plus the full existing suite (107 tests) pass. Verified live with
+    the curl command from Acceptance -- returns
+    `access-control-allow-origin: http://localhost:3000`. Documented `FRONTEND_ORIGIN`
+    in `backend/.env.example`. `semgrep --config auto` on `backend/` clean (0
+    findings/325 rules); `pip-audit` flags only the ambient `pip` tool itself (24.0,
+    pre-existing, unrelated to this change) -- no findings on any project dependency.
 
 - [ ] Task 3: `data-testid`s + E2E test for the login screen (P0)
   - Acceptance: `data-testid` on the email input, register submit button, "I have a
