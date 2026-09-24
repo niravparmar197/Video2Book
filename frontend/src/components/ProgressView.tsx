@@ -32,12 +32,15 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ bookId, onTerminal }
             <span className="material-symbols-outlined text-[18px] text-[#1e3a2f] animate-spin">
               progress_activity
             </span>
-            <span className="font-title-md text-[14px] text-primary font-medium">
+            <span data-testid="progress-current-node" className="font-title-md text-[14px] text-primary font-medium">
               {progress.current_node}
             </span>
           </div>
           {progress.completed_nodes.length > 0 && (
-            <ul className="font-label-sm text-label-sm text-on-surface-variant space-y-1">
+            <ul
+              data-testid="progress-completed-nodes"
+              className="font-label-sm text-label-sm text-on-surface-variant space-y-1"
+            >
               {progress.completed_nodes.map((node) => (
                 <li key={node} className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[14px] text-secondary">

@@ -121,12 +121,23 @@
     repeated runs; `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit`
     clean.
 
-- [ ] Task 8: `data-testid`s + E2E test for the live progress view (P1)
+- [x] Task 8: `data-testid`s + E2E test for the live progress view (P1)
   - Acceptance: `data-testid` on the current-step label and the completed-steps list;
     test mocks the `GET /books/{id}/events` SSE stream (a fake `text/event-stream`
     response with two `progress` events then a `done` event) and asserts the UI updates
     from each event without a page reload.
   - Files: src/components/ProgressView.tsx, tests/e2e/progress-view.spec.ts
+  - Completed: 2026-09-25 — Added `progress-current-node` and `progress-completed-nodes`
+    testids. Split into 2 tests rather than one combined progress-then-done spec: a
+    single mocked `route.fulfill()` response delivers its whole SSE body essentially
+    instantly, so a combined test raced the progress render against the terminal
+    hand-off and was observed to fail non-deterministically (the terminal "done" state
+    was already on screen before the progress assertion ran). Test 1 mocks a stream
+    with two cumulative `progress` events and no terminal event, asserting both
+    testids render the merged state and the done-state download button is *not* yet
+    visible. Test 2 mocks a stream that goes straight to `done` and asserts the
+    hand-off to the terminal UI. Full E2E suite (13 tests) stable across repeated
+    runs; `tsc --noEmit` clean. `semgrep` clean (0/227 rules); `npm audit` clean.
 
 - [ ] Task 9: Shared loading/empty/error state components (P1)
   - Acceptance: a single `src/components/StateMessage.tsx` (or equivalent) used by
