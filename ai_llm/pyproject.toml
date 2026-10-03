@@ -8,6 +8,7 @@ dependencies = [
     "imagehash>=4.3.0",
     "Pillow>=10.0.0",
     "matplotlib>=3.8.0",
+    "faster-whisper>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +17,9 @@ dev = [
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

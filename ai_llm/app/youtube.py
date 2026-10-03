@@ -12,6 +12,9 @@ from typing import Any, Callable
 
 import yt_dlp
 
+from app.config import load_settings
+from app.transcribe import transcribe_audio_to_vtt
+
 
 @dataclass(frozen=True)
 class VideoInfo:
@@ -62,6 +65,18 @@ def list_playlist_videos(
 
     with ydl_factory(opts) as ydl:
         info = ydl.extract_info(url, download=False)
+
+    # A "watch?v=...&list=..." URL can flat-resolve to a `_type: "url"`
+    # pointer at the playlist tab (e.g. ".../playlist?list=...") instead of
+    # directly to the playlist's entries. Follow it so a real "id" from the
+    # pointer (the playlist id) never gets mistaken for a video id below.
+    hops = 0
+    while info is not None and info.get("_type") == "url" and info.get("url"):
+        if hops >= 5:
+            raise ValueError(f"Too many redirects resolving playlist URL: {url}")
+        with ydl_factory(opts) as ydl:
+            info = ydl.extract_info(info["url"], download=False)
+        hops += 1
 
     entries = info.get("entries")
     if entries is None:
@@ -118,11 +133,42 @@ def fetch_video(
     captions_dir: str | Path,
     languages: list[str] | None = None,
     ydl_factory: Callable[[dict[str, Any]], Any] = yt_dlp.YoutubeDL,
+    transcript_source: str | None = None,
+    whisper_transcribe: Callable[[str | Path, str | Path], Path] = transcribe_audio_to_vtt,
 ) -> VideoInfo:
-    """Fetch metadata + captions for one video without downloading video/audio."""
+    """Fetch metadata + transcript for one video without downloading the
+    video file. `transcript_source` (default: TRANSCRIPT_SOURCE setting,
+    "auto" | "captions" | "whisper") picks the source:
+
+    - "captions": YouTube captions only -- raises CaptionsUnavailableError
+      if none exist, same as this function's original (pre-Whisper-
+      fallback) behavior.
+    - "whisper": skips the captions attempt entirely, transcribes audio
+      via Whisper directly.
+    - "auto" (default): tries captions first (free, instant); if none
+      exist, falls back to downloading audio + Whisper transcription
+      rather than failing the whole video.
+
+    Either way, the returned `captions_path` always points at a plain VTT
+    file -- app.nodes.chunk (and everything downstream) never needs to
+    know or care which source produced it.
+    """
     languages = languages or ["en"]
     captions_dir = Path(captions_dir)
     captions_dir.mkdir(parents=True, exist_ok=True)
+    transcript_source = transcript_source or load_settings().transcript_source
+
+    if transcript_source == "whisper":
+        metadata = fetch_metadata(url, ydl_factory)
+        vtt_path = captions_dir / f"{metadata.video_id}.{languages[0]}.vtt"
+        _transcribe_via_whisper(url, vtt_path, captions_dir, ydl_factory, whisper_transcribe)
+        return VideoInfo(
+            video_id=metadata.video_id,
+            title=metadata.title,
+            duration_seconds=metadata.duration_seconds,
+            url=url,
+            captions_path=str(vtt_path),
+        )
 
     opts = {
         "skip_download": True,
@@ -140,9 +186,14 @@ def fetch_video(
 
     captions_path = _resolve_captions_path(info, captions_dir, languages)
     if captions_path is None:
-        raise CaptionsUnavailableError(
-            f"no captions found for {url} in languages {languages}"
-        )
+        if transcript_source == "captions":
+            raise CaptionsUnavailableError(
+                f"no captions found for {url} in languages {languages}"
+            )
+        # auto: fall back to Whisper rather than failing the whole video.
+        vtt_path = captions_dir / f"{info['id']}.{languages[0]}.vtt"
+        _transcribe_via_whisper(url, vtt_path, captions_dir, ydl_factory, whisper_transcribe)
+        captions_path = vtt_path
 
     return VideoInfo(
         video_id=info["id"],
@@ -151,6 +202,49 @@ def fetch_video(
         url=url,
         captions_path=str(captions_path),
     )
+
+
+def _transcribe_via_whisper(
+    url: str,
+    vtt_path: Path,
+    audio_dir: Path,
+    ydl_factory: Callable[[dict[str, Any]], Any],
+    whisper_transcribe: Callable[[str | Path, str | Path], Path],
+) -> None:
+    """Downloads audio-only (never the video), transcribes it, then always
+    deletes the audio file -- root AGENTS.md: no video/audio file is kept
+    around, stream mode's guarantee applies to this fallback path too."""
+    audio_path = download_audio(url, audio_dir, ydl_factory)
+    try:
+        whisper_transcribe(audio_path, vtt_path)
+    finally:
+        Path(audio_path).unlink(missing_ok=True)
+
+
+def download_audio(
+    url: str,
+    output_dir: str | Path,
+    ydl_factory: Callable[[dict[str, Any]], Any] = yt_dlp.YoutubeDL,
+) -> Path:
+    """Downloads audio-only (bestaudio, never video) for the Whisper
+    fallback. Caller is responsible for deleting it once transcribed."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with ydl_factory(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    audio_path = output_dir / f"{info['id']}.{info['ext']}"
+    if not audio_path.exists():
+        raise RuntimeError(f"audio download produced no file for {url}")
+    return audio_path
 
 
 def get_stream_url(

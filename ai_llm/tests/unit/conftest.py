@@ -28,6 +28,17 @@ without a reset a fast-running earlier test could leave a provider's "last
 call" timestamp close enough to "now" that a later test's call_writer call
 triggers a real (or real-if-unmocked) pacing sleep -- test isolation, not a
 behavior test in itself.
+
+TRANSCRIPT_SOURCE defaults to "captions" for every unit test, same
+rationale as VIDEO_MODE above: the real .env default is "auto" (sprints/
+v11's Whisper fallback), and app.youtube.fetch_video's default
+whisper_transcribe callable loads a real faster-whisper model on first
+use -- without this override, any existing/future test whose fake
+ydl_factory reports no captions would silently trigger a real, heavy model
+load instead of raising CaptionsUnavailableError as originally intended.
+Tests that specifically exercise the Whisper fallback override this
+locally with monkeypatch.setenv("TRANSCRIPT_SOURCE", "auto"/"whisper") or
+pass transcript_source= explicitly.
 """
 import json
 
@@ -37,6 +48,11 @@ import pytest
 @pytest.fixture(autouse=True)
 def _default_captions_only_video_mode(monkeypatch):
     monkeypatch.setenv("VIDEO_MODE", "captions_only")
+
+
+@pytest.fixture(autouse=True)
+def _default_captions_transcript_source(monkeypatch):
+    monkeypatch.setenv("TRANSCRIPT_SOURCE", "captions")
 
 
 @pytest.fixture(autouse=True)
