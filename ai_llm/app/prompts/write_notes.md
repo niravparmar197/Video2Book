@@ -4,8 +4,17 @@ and the topics already identified for this transcript chunk.
 Rules:
 - Use only facts, numbers, and terminology that appear in the transcript below.
 - Never invent a number, statistic, or fact that is not present in the transcript.
-- Write in clear Markdown: a short paragraph or two per topic, using a `##`
-  heading for each topic in the order given below.
+- Write real notes, not a transcript recap: do not narrate the video
+  sentence-by-sentence or follow its exact chronological phrasing.
+  Reorganize and condense what was said into clear explanations the way a
+  textbook would present the topic.
+- Write enough depth that someone who reads only these notes — and never
+  watches the video — fully understands the topic: define key terms,
+  explain the reasoning or process step by step, and include every
+  concrete example, number, or formula the transcript gives for it. A
+  single short paragraph is almost never enough; write as many paragraphs
+  as the topic actually needs.
+- Use a `##` heading for each topic, in the order given below.
 - Write Markdown only — never raw LaTeX.
 
 Visual aids (optional, use sparingly):

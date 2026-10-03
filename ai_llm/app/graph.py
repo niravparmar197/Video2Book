@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Callable, TypedDict, TypeVar
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -56,10 +58,10 @@ from app.nodes.chunk import run_chunk
 from app.nodes.fetch import run_fetch_playlist
 from app.nodes.frames import load_screenshots_for_sources, load_video_screenshots, run_frames
 from app.nodes.order import run_order_topics
-from app.nodes.outline import run_outline, run_topic_outline
+from app.nodes.outline import outline_json_path, run_outline, run_topic_outline
 from app.nodes.plan import run_plan_topics
 from app.nodes.topics import run_topics, topics_output_path
-from app.nodes.write import notes_output_path, run_write, run_write_topic
+from app.nodes.write import chapter_status_path, notes_output_path, run_write, run_write_topic
 
 
 class VideoRef(TypedDict):
@@ -98,6 +100,51 @@ def _fetch_node(state: BookState) -> dict:
             for video in videos
         ]
     }
+
+
+# Independent per-chunk/per-chapter LLM calls (topics, write, index_terms)
+# ran strictly one after another before this -- verified against a real run:
+# a single 5-minute video's write+book_pass phase alone took ~8 minutes
+# because 4 independent chapters were written sequentially, and that cost
+# scales linearly (not sub-linearly) with a 30-hour playlist's ~60 chunks.
+# Bounded rather than unbounded so a huge playlist doesn't spawn hundreds of
+# threads at once; NVIDIA's 40 RPM cap (app/llm.py's _pace, now thread-safe)
+# is still what actually limits real call throughput.
+_MAX_PARALLEL_LLM_CALLS = 4
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+def _map_parallel(items: list[_T], fn: Callable[[_T], _R]) -> list[_R]:
+    """Run fn(item) for each item on a bounded thread pool, returning
+    results in the same order as `items`.
+
+    Every submitted item is allowed to finish -- success or failure --
+    before any exception is raised; only then does the first one raise
+    (deterministically, by input order). This preserves each sequential
+    loop's original crash-safety guarantee (root AGENTS.md: "every step
+    saves to disk") now that items run concurrently: a real regression
+    caught this -- ThreadPoolExecutor.map() raises a failing item's
+    exception as soon as it's reached, which could happen before a sibling
+    item running in the same batch had finished writing its own output to
+    disk, losing work that should have survived for --resume to skip.
+    """
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(items), _MAX_PARALLEL_LLM_CALLS)) as pool:
+        futures = [pool.submit(fn, item) for item in items]
+        results: list[_R] = []
+        first_exception: Exception | None = None
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001 - re-raised below, not swallowed
+                if first_exception is None:
+                    first_exception = exc
+        if first_exception is not None:
+            raise first_exception
+        return results
 
 
 class BudgetExceededError(RuntimeError):
@@ -156,36 +203,60 @@ def _frames_node(state: BookState) -> dict:
     """Screenshots per chunk (sprints/v4 PRD.md). Skipped entirely when
     VIDEO_MODE=captions_only. run_frames() is self-cache-skippable, so no
     run_cached() wrapper is needed here.
+
+    Each chunk's ffmpeg scene scan ran strictly one after another before
+    this -- unlike topics/write, which were already parallelized
+    (_map_parallel) -- so a playlist's total frames time scaled linearly
+    with its chunk count even though each chunk's scan is independent I/O
+    (network stream read + local ffmpeg), not an LLM call bound by a
+    shared rate limit. Bounded on the same _MAX_PARALLEL_LLM_CALLS pool so
+    a huge playlist doesn't spawn hundreds of ffmpeg processes at once.
     """
     if load_settings().video_mode == "captions_only":
         return {}
 
     videos_by_id = {video["video_id"]: video for video in state["videos"]}
-    for video_id, chunk_paths in state["chunk_paths"].items():
+    chunk_items = [
+        (video_id, chunk_path)
+        for video_id, chunk_paths in state["chunk_paths"].items()
+        for chunk_path in chunk_paths
+    ]
+
+    def process(item: tuple[str, str]) -> None:
+        video_id, chunk_path = item
         video_url = videos_by_id[video_id]["url"]
-        for chunk_path in chunk_paths:
-            chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
-            run_frames(video_id, video_url, chunk, state["output_dir"])
+        chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
+        run_frames(video_id, video_url, chunk, state["output_dir"])
+
+    _map_parallel(chunk_items, process)
     return {}
 
 
 def _topics_node(state: BookState) -> dict:
-    for video_chunk_paths in state["chunk_paths"].values():
-        for chunk_path in video_chunk_paths:
-            chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
-            output_path = topics_output_path(chunk, state["output_dir"])
-            run_cached(output_path, lambda cp=chunk_path: run_topics(cp, state["output_dir"]))
+    all_chunk_paths = [
+        chunk_path
+        for video_chunk_paths in state["chunk_paths"].values()
+        for chunk_path in video_chunk_paths
+    ]
+
+    def process(chunk_path: str) -> None:
+        chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
+        output_path = topics_output_path(chunk, state["output_dir"])
+        run_cached(output_path, lambda: run_topics(chunk_path, state["output_dir"]))
+
+    _map_parallel(all_chunk_paths, process)
     return {}
 
 
 def _write_node(state: BookState) -> dict:
-    notes_paths: dict[str, str] = {}
-    for video in state["videos"]:
+    def process(video: dict) -> tuple[str, str]:
         video_id = video["video_id"]
         output_path = notes_output_path(video_id, state["output_dir"])
-        run_cached(output_path, lambda vid=video_id: run_write(vid, state["output_dir"]))
-        notes_paths[video_id] = str(output_path)
-    return {"notes_paths": notes_paths}
+        run_cached(output_path, lambda: run_write(video_id, state["output_dir"]))
+        return video_id, str(output_path)
+
+    results = _map_parallel(state["videos"], process)
+    return {"notes_paths": dict(results)}
 
 
 def _outline_node(state: BookState) -> dict:
@@ -201,22 +272,19 @@ def _run_book_pass(chapters: list[dict], output_dir: str) -> dict:
     underlying LLM call is cache-skipped via run_cached, matching every
     other step's crash-safety rule.
     """
-    output_dir_path = Path(output_dir)
-    chapters_with_notes = []
-    index_terms_by_file_key: dict[str, list[str]] = {}
-
-    for chapter in chapters:
+    def process(chapter: dict) -> tuple[dict, str, list]:
         notes = Path(chapter["notes_path"]).read_text(encoding="utf-8")
-        chapters_with_notes.append({"title": chapter["title"], "notes": notes})
-
         terms_path = index_terms_json_path(chapter["file_key"], output_dir)
         run_cached(
             terms_path,
-            lambda file_key=chapter["file_key"], n=notes: run_index_terms(file_key, n, output_dir),
+            lambda: run_index_terms(chapter["file_key"], notes, output_dir),
         )
-        index_terms_by_file_key[chapter["file_key"]] = json.loads(
-            terms_path.read_text(encoding="utf-8")
-        )
+        index_terms = json.loads(terms_path.read_text(encoding="utf-8"))
+        return {"title": chapter["title"], "notes": notes}, chapter["file_key"], index_terms
+
+    results = _map_parallel(chapters, process)
+    chapters_with_notes = [chapter_notes for chapter_notes, _, _ in results]
+    index_terms_by_file_key = {file_key: terms for _, file_key, terms in results}
 
     glossary_path = glossary_json_path(output_dir)
     run_cached(glossary_path, lambda: run_glossary(chapters_with_notes, output_dir))
@@ -235,12 +303,25 @@ def _run_book_pass(chapters: list[dict], output_dir: str) -> dict:
     }
 
 
+def _book_title(videos: list[dict]) -> str:
+    """The source video's own title for a single-video book; "Video2Book"
+    (main.tex.j2's long-standing default) for a playlist, since synthesizing
+    one title for a merged multi-video book is a separate design question,
+    not this fix's scope. Verified against a real book: with no title ever
+    threaded through at all, every book's title page read "Video2Book"
+    regardless of the source video."""
+    if len(videos) == 1:
+        return videos[0]["title"]
+    return "Video2Book"
+
+
 def _render_chapters(
     chapters: list[dict],
     output_dir: str,
     preface_path: str | None = None,
     glossary_entries: list[dict] | None = None,
     topic_index_chapters: list[dict] | None = None,
+    book_title: str = "Video2Book",
 ) -> tuple[str, str]:
     """Render + compile a mode-agnostic chapter list into book.pdf (or
     book_vol<N>.pdf when the playlist crosses VOLUME_HOURS, sprints/v6
@@ -274,7 +355,14 @@ def _render_chapters(
         )
         file_keys.append(chapter["file_key"])
 
-    include_topic_index = topic_index_chapters is not None
+    # bool(...), not "is not None": an empty (but non-None) list means
+    # book_pass ran but zero index terms/chapters resulted (e.g. topics
+    # extraction degraded to [] for every chunk, sprints/v11 real finding)
+    # -- rendering an empty \begin{enumerate}...\end{enumerate} is a real
+    # LaTeX fatal error ("Something's wrong--perhaps a missing \item"), so
+    # this must match has_glossary's already-correct bool(glossary_entries)
+    # pattern just below, not just "was a list object passed at all."
+    include_topic_index = bool(topic_index_chapters)
     if include_topic_index:
         render_topic_index(topic_index_chapters, output_dir)
 
@@ -288,6 +376,7 @@ def _render_chapters(
             preface_path=preface_path,
             glossary_entries=glossary_entries,
             include_topic_index=include_topic_index,
+            book_title=book_title,
         )
         pdf_path = compile_chapter(main_tex_path)
         book_pdf_path = Path(output_dir) / "book.pdf"
@@ -304,6 +393,7 @@ def _render_chapters(
         preface_path=preface_path,
         glossary_entries=glossary_entries,
         include_topic_index=include_topic_index,
+        book_title=book_title,
     )
 
     last_pdf_path = None
@@ -355,6 +445,7 @@ def _render_node(state: BookState) -> dict:
         topic_index_chapters=(
             [{"title": chapter["title"]} for chapter in chapters] if book_pass else None
         ),
+        book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}
 
@@ -378,12 +469,13 @@ def _topic_outline_node(state: BookState) -> dict:
 
 
 def _write_topic_node(state: BookState) -> dict:
-    notes_paths: dict[str, str] = {}
-    for chapter in state["chapters"]:
+    def process(chapter: dict) -> tuple[str, str]:
         output_path = notes_output_path(f"topic_{chapter['slug']}", state["output_dir"])
-        run_cached(output_path, lambda ch=chapter: run_write_topic(ch, state["output_dir"]))
-        notes_paths[chapter["id"]] = str(output_path)
-    return {"notes_paths": notes_paths}
+        run_cached(output_path, lambda: run_write_topic(chapter, state["output_dir"]))
+        return chapter["id"], str(output_path)
+
+    results = _map_parallel(state["chapters"], process)
+    return {"notes_paths": dict(results)}
 
 
 def _book_pass_topic_node(state: BookState) -> dict:
@@ -429,12 +521,25 @@ def _render_topic_node(state: BookState) -> dict:
         topic_index_chapters=(
             [{"title": chapter["title"]} for chapter in chapters] if book_pass else None
         ),
+        book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}
 
 
 def build_video_graph(checkpointer=None):
-    """BOOK_ORDER=video (v2): fetch->chunk->topics->write->outline->book_pass->render->END."""
+    """BOOK_ORDER=video (v2): fetch->chunk->{frames, topics->write->outline->
+    book_pass}->render->END.
+
+    `frames` and `topics` run as parallel branches off `chunk` (sprints/v10):
+    both write no BookState keys of their own (screenshots and topics are
+    read back from disk by `render`/`topics`->`write` respectively, not
+    passed through graph state), so there's no state-merge conflict, and
+    `topics` has no data dependency on `frames`' output -- only the two
+    branches converging at `render` (which reads frames' saved screenshots
+    from disk) enforces frames must finish before render, same guarantee as
+    the old strictly-sequential chain, just without frames blocking topics/
+    write/outline/book_pass from starting concurrently.
+    """
     builder = StateGraph(BookState)
     builder.add_node("fetch", _fetch_node)
     builder.add_node("check_budget", _check_budget_node)
@@ -450,11 +555,11 @@ def build_video_graph(checkpointer=None):
     builder.add_edge("fetch", "check_budget")
     builder.add_edge("check_budget", "chunk")
     builder.add_edge("chunk", "frames")
-    builder.add_edge("frames", "topics")
+    builder.add_edge("chunk", "topics")
     builder.add_edge("topics", "write")
     builder.add_edge("write", "outline")
     builder.add_edge("outline", "book_pass")
-    builder.add_edge("book_pass", "render")
+    builder.add_edge(["frames", "book_pass"], "render")
     builder.add_edge("render", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -489,7 +594,14 @@ def build_video_plan_graph(checkpointer=None):
 
 
 def build_topic_graph(checkpointer=None):
-    """BOOK_ORDER=topic (v3): fetch->check_budget->chunk->topics->plan->order->outline->write->book_pass->render->END."""
+    """BOOK_ORDER=topic (v3): fetch->check_budget->chunk->{frames, topics->
+    plan->order->outline->write->book_pass}->render->END.
+
+    `frames` runs parallel to topics/plan/order/outline/write/book_pass
+    (sprints/v10), same rationale as `build_video_graph`: no state-key
+    conflict, no data dependency, only `render` (which reads frames' saved
+    screenshots from disk) needs frames to have finished.
+    """
     builder = StateGraph(BookState)
     builder.add_node("fetch", _fetch_node)
     builder.add_node("check_budget", _check_budget_node)
@@ -507,13 +619,13 @@ def build_topic_graph(checkpointer=None):
     builder.add_edge("fetch", "check_budget")
     builder.add_edge("check_budget", "chunk")
     builder.add_edge("chunk", "frames")
-    builder.add_edge("frames", "topics")
+    builder.add_edge("chunk", "topics")
     builder.add_edge("topics", "plan")
     builder.add_edge("plan", "order")
     builder.add_edge("order", "outline")
     builder.add_edge("outline", "write")
     builder.add_edge("write", "book_pass")
-    builder.add_edge("book_pass", "render")
+    builder.add_edge(["frames", "book_pass"], "render")
     builder.add_edge("render", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -559,11 +671,21 @@ def _node_order_for(book_order: str, phase: str) -> list[str]:
     return _VIDEO_PLAN_NODE_ORDER if phase == "plan" else _VIDEO_NODE_ORDER
 
 
+def _parse_checkpoint_dt(value) -> datetime:
+    """LangGraph's StateSnapshot.created_at is an ISO-8601 string in real
+    checkpoints (confirmed by this module's own test fixtures); accept a
+    datetime too defensively since that's not contractually guaranteed."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(value)
+
+
 def get_progress(output_dir: str | Path, checkpointer, book_order: str | None = None, phase: str = "render") -> dict:
     """Read-only: reports where a book's LangGraph run currently stands,
-    without invoking anything (sprints/v7 Task 4). Node names/ordering
-    knowledge stays here, next to where the graphs themselves are defined --
-    callers (e.g. backend/'s `/events` endpoint) never hardcode a node list.
+    without invoking anything (sprints/v7 Task 4; elapsed/percent added
+    sprints/v10 Task 2). Node names/ordering knowledge stays here, next to
+    where the graphs themselves are defined -- callers (e.g. backend/'s
+    `/events` endpoint) never hardcode a node list.
 
     `phase`: "plan" inspects the --plan-only graph variant (matches
     `run_plan`'s node set, which skips `frames`/`write` down to `render`);
@@ -573,8 +695,25 @@ def get_progress(output_dir: str | Path, checkpointer, book_order: str | None = 
     `process_run_book` already tracks a book's current phase.
 
     Returns `{"completed_nodes": [...], "current_node": str | None,
-    "next_nodes": [...], "step": int}`. A `thread_id` with no checkpoint yet
-    (book not started) returns all-empty/zero rather than raising.
+    "next_nodes": [...], "step": int, "percent": int, "elapsed_seconds":
+    int}`. A `thread_id` with no checkpoint yet (book not started) returns
+    all-empty/zero rather than raising.
+
+    `next_nodes` can hold more than one entry now that `frames` runs as a
+    parallel branch (sprints/v10 Task 1): `current_node`/`completed_nodes`
+    are derived from the *earliest*-positioned pending node in `node_order`,
+    not naively from `next_nodes[0]`, so a node genuinely still running in
+    the other (not-yet-reported) branch is never miscounted as completed.
+
+    Known limitation: if the higher-`node_order`-index parallel branch
+    (`topics`) finishes before the lower-index one (`frames`) -- the
+    reverse of node_order's positional assumption -- `topics` is
+    under-reported as not-yet-completed (and `percent` undercounts by one
+    node's worth) until `frames` also finishes and both leave `next`. This
+    never affects pipeline correctness (`render` still genuinely waits for
+    both via the graph's join edge) -- it's a progress-display accuracy
+    trade-off, acceptable for the "elapsed + percent, no ETA" scope this
+    was built for (sprints/v10 PRD).
     """
     output_dir = Path(output_dir)
     book_order = book_order or load_settings().book_order
@@ -592,25 +731,96 @@ def get_progress(output_dir: str | Path, checkpointer, book_order: str | None = 
     # (the transient checkpoint it writes the instant graph.invoke() begins,
     # before any real node has executed) -- both report as "not started".
     if snapshot.created_at is None or list(snapshot.next) == [START]:
-        return {"completed_nodes": [], "current_node": None, "next_nodes": [], "step": 0}
+        return {
+            "completed_nodes": [],
+            "current_node": None,
+            "next_nodes": [],
+            "step": 0,
+            "percent": 0,
+            "elapsed_seconds": 0,
+        }
 
-    next_nodes = list(snapshot.next)
+    next_nodes = sorted(
+        snapshot.next, key=lambda n: node_order.index(n) if n in node_order else len(node_order)
+    )
     current_node = next_nodes[0] if next_nodes else None
-    if current_node in node_order:
-        completed_nodes = node_order[: node_order.index(current_node)]
+    if next_nodes:
+        boundary = min(
+            (node_order.index(n) for n in next_nodes if n in node_order), default=len(node_order)
+        )
+        completed_nodes = node_order[:boundary]
     else:
         # next == () -- the graph ran to completion; every node in this
         # phase's order is done.
         completed_nodes = list(node_order)
 
     step = snapshot.metadata.get("step", 0) if snapshot.metadata else 0
+    percent = round(len(completed_nodes) / len(node_order) * 100) if node_order else 0
+
+    history = list(graph.get_state_history(config))
+    started_at = _parse_checkpoint_dt(history[-1].created_at if history else snapshot.created_at)
+    # Elapsed freezes at the last checkpoint's time once the run is done
+    # (next_nodes empty) so it doesn't keep growing on a later poll; while
+    # still in progress it's measured against wall-clock now, so it keeps
+    # ticking between checkpoint writes.
+    end_time = datetime.now(timezone.utc) if next_nodes else _parse_checkpoint_dt(snapshot.created_at)
+    elapsed_seconds = max(0, round((end_time - started_at).total_seconds()))
 
     return {
         "completed_nodes": completed_nodes,
         "current_node": current_node,
         "next_nodes": next_nodes,
         "step": step,
+        "percent": percent,
+        "elapsed_seconds": elapsed_seconds,
     }
+
+
+def get_chapter_progress(output_dir: str | Path) -> list[dict]:
+    """Read-only: reports each chapter's write-and-verify progress, without
+    invoking anything (sprints/v9). Reads outline.json (the chapter list)
+    plus whatever notes/status files app.nodes.write has produced so far --
+    never touches LangGraph, since a chapter's status is a disk artifact,
+    not graph state.
+
+    A chapter's write-key is self-evident from its own outline.json shape:
+    "video_id" present -> BOOK_ORDER=video's key (matches
+    notes_output_path's <video_id>.md); otherwise -> BOOK_ORDER=topic's
+    "topic_<slug>" key. No book_order param needed, unlike get_progress,
+    which needs it to build a graph before it can call get_state.
+
+    Returns one dict per chapter: {"id", "title", "status": "pending" |
+    "done", "score", "attempts", "passed"} -- the last three are None until
+    "done". Returns [] (not an error) if outline.json doesn't exist yet
+    (outline hasn't run).
+    """
+    output_dir = Path(output_dir)
+    path = outline_json_path(output_dir)
+    if not path.exists():
+        return []
+
+    chapters = json.loads(path.read_text(encoding="utf-8"))
+    progress = []
+    for chapter in chapters:
+        key = chapter["video_id"] if "video_id" in chapter else f"topic_{chapter['slug']}"
+        done = notes_output_path(key, output_dir).exists()
+        status = None
+        if done:
+            status_path = chapter_status_path(key, output_dir)
+            if status_path.exists():
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+
+        progress.append(
+            {
+                "id": chapter["id"],
+                "title": chapter["title"],
+                "status": "done" if done else "pending",
+                "score": status["score"] if status else None,
+                "attempts": status["attempts"] if status else None,
+                "passed": status["passed"] if status else None,
+            }
+        )
+    return progress
 
 
 def build_graph(checkpointer=None, book_order: str | None = None):

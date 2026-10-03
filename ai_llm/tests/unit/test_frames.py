@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from app.nodes import frames as frames_node
 
@@ -246,6 +246,31 @@ def test_dedupe_frames_drops_blank_frames(tmp_path):
 
     _make_image(p1, fill=(50, 100, 150), shape=(5, 5, 55, 55))
     _make_image(p2, fill=(255, 255, 255))
+
+    frames = [
+        {"path": p1, "timestamp_seconds": 1.0},
+        {"path": p2, "timestamp_seconds": 2.0},
+    ]
+
+    kept = frames_node.dedupe_frames(frames)
+
+    assert len(kept) == 1
+    assert kept[0]["timestamp_seconds"] == 1.0
+
+
+def test_dedupe_frames_drops_blurry_frames(tmp_path):
+    """A scene-cut frame ffmpeg grabs mid-transition is often still visibly
+    blurred -- simulated here with a real Gaussian blur over sharp content
+    (not just a solid fill, which the blank check would already catch), so
+    this must be the blur check specifically, not the blank one.
+    """
+    p1 = tmp_path / "scene_0001.jpg"
+    p2 = tmp_path / "scene_0002.jpg"  # same content, heavily blurred
+
+    sharp = Image.new("RGB", (64, 64), color=(200, 50, 50))
+    ImageDraw.Draw(sharp).rectangle((0, 0, 20, 20), fill=(255, 0, 0))
+    sharp.save(p1)
+    sharp.filter(ImageFilter.GaussianBlur(radius=3)).save(p2)
 
     frames = [
         {"path": p1, "timestamp_seconds": 1.0},

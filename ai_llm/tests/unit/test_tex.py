@@ -45,6 +45,22 @@ def test_escape_latex_leaves_plain_text_untouched():
     assert escape_latex("plain text with no special chars") == "plain text with no special chars"
 
 
+def test_escape_latex_normalizes_unusual_unicode_spaces():
+    # Latin Modern (LuaLaTeX's default font) has no glyph for these --
+    # verified against a real compiled book where a narrow no-break space
+    # (U+202F) before "T1" rendered as a broken character.
+    assert escape_latex("transaction T1") == "transaction T1"
+    assert escape_latex("a b c d") == "a b c d"
+
+
+def test_markdown_notes_to_sections_converts_bold_and_italic_emphasis():
+    sections = markdown_notes_to_sections(
+        "## Isolation\n\nThe **serializable** level is *strict*.\n"
+    )
+
+    assert sections[0].paragraphs == [r"The \textbf{serializable} level is \textit{strict}."]
+
+
 def test_markdown_notes_to_sections_parses_headings_and_paragraphs():
     sections = markdown_notes_to_sections(SAMPLE_NOTES)
 
@@ -162,6 +178,20 @@ def test_render_book_writes_main_tex_with_toc_and_ordered_inputs(tmp_path):
     assert content.index(r"\input{vid1}") < content.index(r"\input{vid2}")
 
 
+def test_render_book_uses_given_book_title(tmp_path):
+    main_tex_path = render_book([], tmp_path, book_title="ACID Properties in Databases")
+
+    content = main_tex_path.read_text(encoding="utf-8")
+    assert r"\title{ACID Properties in Databases}" in content
+
+
+def test_render_book_defaults_title_to_video2book(tmp_path):
+    main_tex_path = render_book([], tmp_path)
+
+    content = main_tex_path.read_text(encoding="utf-8")
+    assert r"\title{Video2Book}" in content
+
+
 def test_render_book_empty_chapter_list_still_writes_valid_shell(tmp_path):
     main_tex_path = render_book([], tmp_path)
 
@@ -237,8 +267,12 @@ def test_render_chapter_embeds_screenshots_as_figures_in_timestamp_order(tmp_pat
     assert "../assets/vid1/000_00.jpg" in content
     assert "Screenshot at 00:12" in content
     assert "Screenshot at 01:30" in content
-    # Figures come after the chapter's text sections.
-    assert content.index("Gradient descent minimizes") < content.index(r"\includegraphics")
+    # Screenshots are split across the chapter's two sections (one each)
+    # and placed right after their own section, not dumped together after
+    # the whole chapter -- shot_a lands with the first section (before the
+    # second section's heading), shot_b with the second (after its text).
+    assert content.index("000_00.jpg") < content.index("Gradient Descent")
+    assert content.index("Gradient descent minimizes") < content.index("000_01.jpg")
 
 
 def test_render_chapter_with_no_screenshots_has_no_figures(tmp_path):
@@ -397,7 +431,7 @@ def test_render_book_assembles_front_and_back_matter_in_order(tmp_path):
     )
     content = main_tex_path.read_text(encoding="utf-8")
 
-    title_pos = content.index(r"\maketitle")
+    title_pos = content.index(r"\begin{titlepage}")
     preface_pos = content.index("This book covers the basics.")
     toc_pos = content.index(r"\tableofcontents")
     chapter_pos = content.index(r"\input{chapter1}")

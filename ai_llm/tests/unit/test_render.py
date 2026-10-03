@@ -20,7 +20,10 @@ def test_render_table_produces_escaped_latex_tabular():
 
     assert r"\begin{tabular}" in tex
     assert r"\end{tabular}" in tex
-    assert "Layer & Size" in tex
+    assert r"\toprule" in tex
+    assert r"\midrule" in tex
+    assert r"\bottomrule" in tex
+    assert r"\textbf{Layer} & \textbf{Size}" in tex
     assert r"Output \& More & 10" in tex
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 import imagehash
-from PIL import Image, ImageStat
+from PIL import Image, ImageFilter, ImageStat
 
 from app.youtube import download_chunk_video as _download_chunk_video
 from app.youtube import get_stream_url as _get_stream_url
@@ -33,6 +33,21 @@ HAMMING_DEDUPE_THRESHOLD = 4
 # Grayscale pixel-value standard deviation below which a frame is treated
 # as blank/solid-color (e.g. a black transition frame) and dropped.
 BLANK_STDDEV_THRESHOLD = 5.0
+# Variance of the Laplacian/edge-detected grayscale image below which a
+# frame is treated as motion-blurred (e.g. a mid-transition scene-cut
+# frame ffmpeg's scene filter occasionally grabs) and dropped -- a sharp
+# frame has high-contrast edges (high variance); a blurred one has edges
+# smoothed into low-contrast gradients (low variance). Deliberately low: a
+# false positive here throws away a real screenshot, so this only catches
+# frames that are clearly, not just slightly, out of focus.
+BLUR_VARIANCE_THRESHOLD = 15.0
+# Pixels trimmed off each edge before measuring blur variance -- PIL's
+# FIND_EDGES filter reports a spurious bright border one pixel wide around
+# every image (its convolution padding, not real content), which would
+# otherwise inflate every frame's variance and make even a blank image look
+# "sharp" (verified against a real blank frame: border-inclusive variance
+# was ~3750 vs. 0.0 once cropped).
+_BLUR_CROP_MARGIN = 3
 
 logger = logging.getLogger(__name__)
 
@@ -157,17 +172,34 @@ def detect_scenes_with_fallback(
         )
 
 
+def _edge_variance(grayscale: Image.Image, margin: int = _BLUR_CROP_MARGIN) -> float:
+    """Variance of Laplacian-style edge response, the standard sharp/blur
+    proxy: a sharp image has strong, high-contrast edges (high variance);
+    a blurred one has edges smoothed into low-contrast gradients (low
+    variance). `margin` crops PIL's FIND_EDGES border artifact out before
+    measuring -- see BLUR_VARIANCE_THRESHOLD's comment.
+    """
+    edges = grayscale.filter(ImageFilter.FIND_EDGES)
+    width, height = edges.size
+    if width > 2 * margin and height > 2 * margin:
+        edges = edges.crop((margin, margin, width - margin, height - margin))
+    return ImageStat.Stat(edges).var[0]
+
+
 def dedupe_frames(
     frames: list[dict],
     hamming_threshold: int = HAMMING_DEDUPE_THRESHOLD,
     blank_stddev_threshold: float = BLANK_STDDEV_THRESHOLD,
+    blur_variance_threshold: float = BLUR_VARIANCE_THRESHOLD,
 ) -> list[dict]:
-    """Drop near-duplicate and blank/solid-color frames.
+    """Drop near-duplicate, blank/solid-color, and motion-blurred frames.
 
     `frames` is detect_scenes's output ({"path", "timestamp_seconds"},
     already in timestamp order). Returns the kept subset, same order, same
     shape -- so a static slide held for 20 minutes keeps ~1 screenshot
-    instead of flooding the book with near-identical frames.
+    instead of flooding the book with near-identical frames, and a
+    scene-cut frame ffmpeg grabbed mid-transition (still visibly blurred)
+    never makes it into the book as a bad screenshot.
     """
     kept: list[dict] = []
     kept_hashes: list[imagehash.ImageHash] = []
@@ -176,6 +208,9 @@ def dedupe_frames(
         with Image.open(frame["path"]) as image:
             grayscale = image.convert("L")
             if ImageStat.Stat(grayscale).stddev[0] < blank_stddev_threshold:
+                continue
+
+            if _edge_variance(grayscale) < blur_variance_threshold:
                 continue
 
             phash = imagehash.phash(image)

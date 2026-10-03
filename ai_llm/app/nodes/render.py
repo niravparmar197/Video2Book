@@ -25,17 +25,23 @@ DOT_TIMEOUT_SECONDS = 30
 
 
 def render_table(data: dict) -> str:
-    """Turn {"headers": [...], "rows": [[...], ...]} into an escaped LaTeX tabular block."""
+    """Turn {"headers": [...], "rows": [[...], ...]} into an escaped LaTeX
+    tabular block, styled with booktabs rules (toprule/midrule/bottomrule)
+    rather than plain \\hline -- the open, ruled-line look professionally
+    typeset tables use, instead of a boxed-in grid.
+    """
     headers = [str(header) for header in data.get("headers", [])]
     rows = [[str(cell) for cell in row] for row in data.get("rows", [])]
 
     column_spec = "l" * max(len(headers), 1)
-    lines = [f"\\begin{{tabular}}{{{column_spec}}}", "\\hline"]
-    lines.append(" & ".join(escape_latex(header) for header in headers) + r" \\")
-    lines.append("\\hline")
+    lines = [f"\\begin{{tabular}}{{{column_spec}}}", "\\toprule"]
+    lines.append(
+        " & ".join(f"\\textbf{{{escape_latex(header)}}}" for header in headers) + r" \\"
+    )
+    lines.append("\\midrule")
     for row in rows:
         lines.append(" & ".join(escape_latex(cell) for cell in row) + r" \\")
-    lines.append("\\hline")
+    lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
     return "\n".join(lines)
 

@@ -35,10 +35,32 @@ _LATEX_SPECIAL_CHARS = {
 }
 _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _LATEX_SPECIAL_CHARS))
 
+# Unicode space variants an LLM writer routinely emits (narrow no-break space
+# before "T1"/"T2"-style labels, non-breaking space, thin space, ...) that
+# Latin Modern -- LuaLaTeX's default font -- has no glyph for, rendering as a
+# broken/missing character. Verified against a real compiled book: the writer
+# model wrote U+202F before "T1", which came out as a broken glyph in the PDF.
+# Collapsing to a plain space is safe since none of these carry meaning that
+# survives into a PDF anyway.
+_UNSUPPORTED_UNICODE_SPACES_RE = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3000]")
+
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)")
+
 
 def escape_latex(text: str) -> str:
     """Escape LaTeX special characters so model/transcript text never breaks a compile."""
+    text = _UNSUPPORTED_UNICODE_SPACES_RE.sub(" ", text)
     return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_SPECIAL_CHARS[m.group()], text)
+
+
+def _convert_markdown_emphasis(text: str) -> str:
+    """Convert **bold**/*italic* markdown emphasis -- a habit the writer
+    model falls into even though write_notes.md never asks for it -- into
+    LaTeX \\textbf/\\textit. Previously passed straight through, so a
+    compiled book showed literal asterisks (verified against a real book)."""
+    text = _MD_BOLD_RE.sub(r"\\textbf{\1}", text)
+    return _MD_ITALIC_RE.sub(r"\\textit{\1}", text)
 
 
 @dataclass(frozen=True)
@@ -84,7 +106,7 @@ def markdown_notes_to_sections(markdown_text: str) -> list[Section]:
         if paragraph_lines:
             text = " ".join(paragraph_lines).strip()
             if text:
-                current_paragraphs.append(escape_latex(text))
+                current_paragraphs.append(_convert_markdown_emphasis(escape_latex(text)))
             paragraph_lines.clear()
 
     def flush_section() -> None:
@@ -149,6 +171,30 @@ def _build_figures(screenshots: list[dict] | None, chapters_dir: Path) -> list[F
             Figure(relative_path=relative_path, caption=f"Screenshot at {minutes:02d}:{seconds:02d}")
         )
     return figures
+
+
+def _distribute_figures(figures: list[Figure], section_count: int) -> list[list[Figure]]:
+    """Split a chapter's timestamp-ordered screenshots evenly across its
+    sections, so each section gets the figures nearest to its own place in
+    the chapter instead of every screenshot being dumped in one block after
+    all the text (the previous behavior: screenshots read as disconnected
+    from the content they illustrate). Order-preserving, proportional by
+    count -- not a real per-section timestamp match, but a much closer
+    approximation than one undifferentiated block at the end.
+
+    Returns a list of length `section_count` (each a possibly-empty slice
+    of `figures`, in order); returns `[]` if there are no sections at all,
+    so the caller falls back to rendering `figures` as its own block.
+    """
+    if section_count == 0:
+        return []
+    total = len(figures)
+    slices: list[list[Figure]] = []
+    for index in range(section_count):
+        start = round(index * total / section_count)
+        end = round((index + 1) * total / section_count)
+        slices.append(figures[start:end])
+    return slices
 
 
 def _render_section_visuals(
@@ -247,12 +293,17 @@ def render_chapter(
 
     `screenshots` (sprints/v4 PRD.md), if given, is a list of
     {"asset_path", "timestamp_seconds"} gathered from every chunk this
-    chapter/topic covers; they are appended as figures after the chapter's
-    text, in timestamp order. Each section's parsed table/diagram/chart
-    Visuals (sprints/v5 PRD.md) are rendered and placed directly after
-    that section's paragraphs. `index_terms` (sprints/v6 PRD.md), if given,
-    are subject-index terms marked with \\index{} at their first
-    occurrence in this chapter, for main.tex.j2's \\printindex.
+    chapter/topic covers; in timestamp order, they are split evenly across
+    the chapter's sections and each slice is placed directly after that
+    section's own text/visuals -- not dumped as one undifferentiated block
+    after the whole chapter, which previously left screenshots looking
+    disconnected from the content they illustrate. A chapter with no
+    parsed sections (e.g. empty notes) falls back to one block at the end.
+    Each section's parsed table/diagram/chart Visuals (sprints/v5 PRD.md)
+    are rendered and placed directly after that section's paragraphs.
+    `index_terms` (sprints/v6 PRD.md), if given, are subject-index terms
+    marked with \\index{} at their first occurrence in this chapter, for
+    main.tex.j2's \\printindex.
     """
     output_dir = Path(output_dir)
     sections = markdown_notes_to_sections(markdown_notes)
@@ -260,11 +311,19 @@ def render_chapter(
     chapters_dir = output_dir / "chapters"
     chapters_dir.mkdir(parents=True, exist_ok=True)
     figures = _build_figures(screenshots, chapters_dir)
+    distributed_figures = _distribute_figures(figures, len(sections))
     rendered_sections = [
-        _render_section_visuals(section, index, video_id, output_dir, chapters_dir)
+        {
+            **_render_section_visuals(section, index, video_id, output_dir, chapters_dir),
+            "screenshot_figures": distributed_figures[index],
+        }
         for index, section in enumerate(sections)
     ]
     _insert_index_markup(rendered_sections, index_terms)
+    # Only non-empty when there were no sections to attach figures to
+    # (distribute_figures returns [] in that case) -- the template's
+    # trailing figures loop is the fallback for that edge case only.
+    figures = figures if not sections else []
 
     # nosec B701 - this renders LaTeX, not HTML/XML; Jinja's HTML autoescape
     # would corrupt our own LaTeX escaping (e.g. "\&" -> "\&amp;"). Every
@@ -311,7 +370,10 @@ def render_glossary(entries: list[dict], output_dir: str | Path) -> Path:
     """
     output_dir = Path(output_dir)
     escaped_entries = [
-        {"term": escape_latex(entry["term"]), "definition": escape_latex(entry["definition"])}
+        {
+            "term": escape_latex(entry["term"]),
+            "definition": _convert_markdown_emphasis(escape_latex(entry["definition"])),
+        }
         for entry in entries
     ]
 
@@ -332,6 +394,7 @@ def render_book(
     preface_path: str | Path | None = None,
     glossary_entries: list[dict] | None = None,
     include_topic_index: bool = False,
+    book_title: str = "Video2Book",
 ) -> Path:
     """Render chapters/main.tex, which \\input's each chapter fragment (in
     the given order) with a table of contents, via main.tex.j2.
@@ -348,6 +411,11 @@ def render_book(
     non-empty), are rendered via render_glossary() and \\input after the
     chapters. Order: title page -> preface -> TOC -> chapters -> glossary
     -> subject index (\\printindex) -> topic index.
+
+    `book_title` (default "Video2Book", matching the previous hardcoded
+    behavior) is the title page's \\title -- verified against a real book
+    that this always showed "Video2Book" regardless of source video, since
+    no caller ever had a title to pass.
     """
     output_dir = Path(output_dir)
     chapters_dir = output_dir / "chapters"
@@ -361,6 +429,7 @@ def render_book(
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)))  # nosec B701
     template = env.get_template("main.tex.j2")
     tex_source = template.render(
+        book_title=escape_latex(book_title),
         chapter_ids=chapter_ids,
         preface_paragraphs=preface_paragraphs,
         has_glossary=has_glossary,
@@ -377,7 +446,7 @@ def _load_preface_paragraphs(preface_path: str | Path | None) -> list[str]:
         return []
     preface_text = Path(preface_path).read_text(encoding="utf-8")
     return [
-        escape_latex(paragraph.strip())
+        _convert_markdown_emphasis(escape_latex(paragraph.strip()))
         for paragraph in preface_text.split("\n\n")
         if paragraph.strip()
     ]
@@ -413,6 +482,7 @@ def render_book_volumes(
     preface_path: str | Path | None = None,
     glossary_entries: list[dict] | None = None,
     include_topic_index: bool = False,
+    book_title: str = "Video2Book",
 ) -> list[Path]:
     """Render one chapters/main_vol<N>.tex per chapter group (sprints/v6
     PRD.md). Front matter (title + preface + TOC) appears in volume 1
@@ -440,6 +510,7 @@ def render_book_volumes(
         is_first = volume_index == 1
         is_last = volume_index == volume_count
         tex_source = template.render(
+            book_title=escape_latex(book_title),
             chapter_ids=group,
             preface_paragraphs=preface_paragraphs if is_first else [],
             has_glossary=has_glossary if is_last else False,

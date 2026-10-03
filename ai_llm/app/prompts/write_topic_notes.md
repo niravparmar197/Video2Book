@@ -9,6 +9,15 @@ Rules:
 - If sources disagree or add different details, cover both without
   contradiction, in one coherent narrative — do not write "Video 1 says...
   Video 2 says..." as separate sub-sections.
+- Write real notes, not a transcript recap: do not narrate the source
+  excerpts sentence-by-sentence or in their original order. Reorganize and
+  condense them into clear, textbook-style explanations of the topic.
+- Write enough depth that someone who reads only this section — and never
+  watches any of the source videos — fully understands the topic: define
+  key terms, explain the reasoning or process step by step, and include
+  every concrete example, number, or formula the excerpts give for it. A
+  single short paragraph is almost never enough; write as many paragraphs
+  as the topic actually needs.
 - Write in Markdown: one or more "## heading" sections with plain
   paragraphs underneath. Never write raw LaTeX.
 - Return ONLY the Markdown notes — no other text, no reasoning or
