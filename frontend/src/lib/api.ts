@@ -80,6 +80,10 @@ export function retryBook(bookId: string): Promise<Book> {
   return request(`/books/${bookId}/retry`, { method: 'POST' });
 }
 
+export function cancelBook(bookId: string): Promise<Book> {
+  return request(`/books/${bookId}/cancel`, { method: 'POST' });
+}
+
 export async function downloadPdf(bookId: string): Promise<void> {
   const key = getApiKey();
   const res = await fetch(`${API_BASE_URL}/books/${bookId}/pdf`, {

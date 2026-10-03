@@ -1,6 +1,6 @@
 # Sprint v2 — Tasks
 
-## Status: In Progress
+## Status: Done
 
 - [x] Task 1: Backend — expose book metadata via `BookResponse` (P0)
   - Acceptance: `GET /books/{id}` (and the `POST /books/youtube` /
@@ -50,41 +50,93 @@
     scratch DB: **128 passed**. `semgrep` clean on the 3 changed files (0/290
     findings); `pip-audit` clean on project dependencies (same pre-existing `pip`
     tool advisory as Task 1, unrelated).
-- [ ] Task 3: Frontend — extend `Book` type and `api.ts` for the new fields (P0)
+- [x] Task 3: Frontend — extend `Book` type and `api.ts` for the new fields (P0)
   - Acceptance: `Book` in `src/types.ts` gains `url`, `created_at`,
     `estimated_cost_usd`, `videos: Video[]` (new `Video` type: `video_id`, `title`,
     `duration_seconds`); `src/lib/api.ts` exports `cancelBook(bookId): Promise<Book>`
     calling `POST /books/{id}/cancel`; `tsc --noEmit` clean.
   - Files: src/types.ts, src/lib/api.ts
-- [ ] Task 4: My Books list shows real titles (P0)
+  - Completed: 2026-09-25 — Found already implemented (uncommitted) on re-reading the
+    files before starting Task 4: `Video`/`Book` types and `cancelBook()` all present
+    exactly per spec. Only needed a downstream fix in `MyBooksScreen.tsx`'s catch
+    fallback (Task 4) to satisfy the now-required `Book` fields. `tsc --noEmit`: clean.
+- [x] Task 4: My Books list shows real titles (P0)
   - Acceptance: each row's primary text is `videos[0]?.title ?? url ?? id` (in that
     fallback order), with the raw id demoted to small secondary text (not removed --
     existing `my-books-row-{id}`/`my-books-status-{id}` testids and Task 5's E2E
     assertions on them keep passing unmodified); a new E2E test covers all three
     fallback tiers (has a title, has only a url, has neither).
   - Files: src/components/MyBooksScreen.tsx, tests/e2e/my-books-metadata.spec.ts
-- [ ] Task 5: Book detail screen shows a metadata card (P0)
+  - Completed: 2026-09-25 — Added `bookTitle()` helper using `||` (not `??`) so an
+    empty-string `url`/`title` also falls through to the next tier, not just
+    null/undefined. Demoted the raw id to small secondary text below the title.
+    Fixed the `getBook(id).catch(...)` fallback object to include all required
+    `Book` fields (was missing `estimated_cost_usd`/`url`/`created_at`/`videos`,
+    breaking `tsc --noEmit` after Task 3's type change). New
+    `tests/e2e/my-books-metadata.spec.ts` covers all three fallback tiers; existing
+    `my-books.spec.ts` assertions on `my-books-row-{id}`/`my-books-status-{id}` pass
+    unmodified. Full e2e suite: 21/21 passed.
+- [x] Task 5: Book detail screen shows a metadata card (P0)
   - Acceptance: a card above the status-specific content shows the title (same
     fallback chain as Task 4), the source `url` as a real link
     (`target="_blank" rel="noopener noreferrer"`), `estimated_cost_usd` formatted as
     `"$0.00"`-style currency, and `created_at` formatted as a readable date;
     `data-testid`s on each field; E2E test asserts all four render from mocked data.
   - Files: src/components/BookDetailScreen.tsx, tests/e2e/book-detail-metadata.spec.ts
-- [ ] Task 6: Cancel button for in-flight books (P0)
+  - Completed: 2026-09-25 — Added `book-detail-title`, `book-detail-url`,
+    `book-detail-cost`, `book-detail-created-at` testids inside a new card above the
+    status-specific content; kept the pre-existing `book-detail-id` testid/exact-text
+    contract intact (asserted by `new-book.spec.ts`). Each field renders only when
+    present, so older test mocks lacking the new `Book` fields entirely (e.g.
+    `new-book.spec.ts`, `book-detail-terminal.spec.ts`) don't crash or show
+    "undefined"/"$NaN". New `tests/e2e/book-detail-metadata.spec.ts` asserts all four
+    fields plus link attributes from mocked data.
+- [x] Task 6: Cancel button for in-flight books (P0)
   - Acceptance: `data-testid="book-detail-cancel"` button renders only when status is
     `queued`/`planning`/`outline_ready`/`rendering` (not `done`/`failed`); clicking it
     calls the mocked `POST /books/{id}/cancel` and the screen transitions to the
     existing failed-state UI showing "Cancelled by user"; E2E test covers the click
     and the resulting UI state.
   - Files: src/components/BookDetailScreen.tsx, tests/e2e/book-detail-cancel.spec.ts
-- [ ] Task 7: Style the metadata card with the existing design tokens (P1)
+  - Completed: 2026-09-25 — Added `handleCancel()` (calls `cancelBook()`, updates
+    local state, stops the poll interval) and the cancel button, gated on a
+    `CANCELLABLE_STATUSES` list matching the PRD. Reuses the existing failed-state UI
+    (no new UI state, per the PRD). New `tests/e2e/book-detail-cancel.spec.ts` covers
+    both the in-flight-to-cancelled transition and the button being hidden for
+    `done` books.
+- [x] Task 7: Style the metadata card with the existing design tokens (P1)
   - Acceptance: the Task 5 card uses the same surface/spacing/typography classes as
     the rest of the app (no new colors or one-off values); reviewed via a screenshot
     in `tests/screenshots/`; all Task 4-6 tests still pass unmodified.
   - Files: src/components/BookDetailScreen.tsx
-- [ ] Task 8: Mobile responsiveness for the new elements at 375px (P2)
+  - Completed: 2026-09-25 — Screenshot review caught a real bug: the metadata row
+    used invented `gap-x-space-md`/`gap-y-1` classes that don't exist in this
+    project's hand-rolled token set (`src/index.css` only defines `.gap-space-sm`/
+    `.gap-space-md`, no directional variants, and this app's custom `-md`/`-sm`
+    tokens aren't part of Tailwind's arbitrary-value syntax so nothing was
+    generated) -- url/cost/date were rendering with zero space between them.
+    Swapped to the existing `gap-space-sm` utility; re-screenshotted to confirm
+    proper spacing. Card otherwise reuses `bg-surface-container-lowest`,
+    `rounded-xl`, `border-[#e3e2df]/60`, `shadow-sm`, and the same font-*/text-*
+    classes as `OutlineEditor`/`ProgressView`. Screenshot:
+    `tests/screenshots/v2-task7-01-metadata-card.png`. Tasks 4-6 tests re-run
+    unmodified: still passing.
+  - Note: this project runs Tailwind v4 via `@import "tailwindcss"` layered with a
+    hand-rolled set of custom spacing/typography classes in `src/index.css` (e.g.
+    `.gap-space-sm`) rather than Tailwind's config-driven theme -- only classes
+    literally defined there (or Tailwind's own defaults / bracket arbitrary values)
+    take effect; a plausible-looking `-x`/`-y` variant of a custom class silently
+    no-ops instead of erroring.
+- [x] Task 8: Mobile responsiveness for the new elements at 375px (P2)
   - Acceptance: `tests/e2e/responsive.spec.ts`'s existing walk is extended to include
     the book detail metadata card and the cancel button, asserting no horizontal
     scroll and full viewport visibility for each; any overflow found is fixed in the
     relevant component's Tailwind classes.
   - Files: tests/e2e/responsive.spec.ts, src/components/*.tsx (layout fixes as needed)
+  - Completed: 2026-09-25 — Extended the existing 375px walk with a `rendering`-status
+    book carrying a long title/url, asserting no horizontal scroll and full-viewport
+    visibility for `book-detail-title`/`-id`/`-url`/`-cost`/`-created-at`/`-cancel`.
+    No overflow found -- the existing `truncate`/`flex-wrap` classes from Task 5/7
+    already handled it; confirmed via
+    `tests/screenshots/v2-task8-01-book-detail-metadata-mobile.png`. Full e2e suite:
+    21/21 passed. `tsc --noEmit`: clean.

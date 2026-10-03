@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import type { Book } from '../../src/types';
 
 /**
  * The base URL the app's fetch calls target (src/lib/api.ts's default when
@@ -48,6 +49,25 @@ export async function loginAs(page: Page, apiKey = 'test-api-key'): Promise<void
 /** Seeds the client-side "my books" index MyBooksScreen reads from. */
 export async function seedTrackedBooks(page: Page, ids: string[]): Promise<void> {
   await page.evaluate((ids) => localStorage.setItem('v2b_my_book_ids', JSON.stringify(ids)), ids);
+}
+
+/**
+ * A fully-typed Book fixture with every field a real GET /books/{id}
+ * response includes (sprint v2), so tests exercising metadata/filter/search
+ * behavior don't each hand-roll their own partial object. Override only
+ * what the test cares about.
+ */
+export function makeBook(overrides: Partial<Book> & Pick<Book, 'id'>): Book {
+  return {
+    status: 'queued',
+    pdf_path: null,
+    error_message: null,
+    estimated_cost_usd: 0,
+    url: '',
+    created_at: '2026-01-01T00:00:00Z',
+    videos: [],
+    ...overrides,
+  };
 }
 
 export async function mockJson(
