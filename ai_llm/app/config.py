@@ -8,8 +8,17 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Anchored to this package's own directory rather than a bare relative
+# ".env", so load_settings() finds the right file regardless of the
+# caller's cwd -- ai_llm's own CLI runs from within ai_llm/, but backend/
+# imports this module and calls load_settings() from its own cwd, where a
+# relative ".env" would silently resolve to backend/.env (no LLM keys
+# there) instead of ai_llm/.env.
+_DEFAULT_DOTENV_PATH = str(Path(__file__).resolve().parent.parent / ".env")
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -57,7 +66,7 @@ class Settings:
     google_api_key: str = ""
 
 
-def load_settings(dotenv_path: str | None = ".env") -> Settings:
+def load_settings(dotenv_path: str | None = _DEFAULT_DOTENV_PATH) -> Settings:
     """Build a Settings instance from the process environment.
 
     Existing process environment variables always win over values in the
