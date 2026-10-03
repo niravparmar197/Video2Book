@@ -209,15 +209,24 @@ def test_resume_continues_playlist_after_crash_without_redoing_completed_video(
 
     monkeypatch.setattr(topics_module, "call_writer", counting_topics_call_writer)
 
-    def flaky_write_call_writer(prompt, **kw):
-        write_call_order.append(prompt)
-        # 1st call (video1) succeeds; 2nd call (video2, pre-crash) fails;
-        # 3rd call (video2, on resume) succeeds.
-        if len(write_call_order) == 2:
-            raise RuntimeError("simulated crash on video 2's write")
-        return "## Neural Networks\n\nNotes."
+    # graph.py now writes each video's chapter concurrently (independent
+    # per-video LLM calls no longer run strictly one after another), so
+    # "the Nth call overall" no longer reliably means "video2's call" --
+    # target the failure at video2 specifically (via chunk_path, which
+    # write_module.call_writer's flat prompt string doesn't carry) instead
+    # of a global call count, real regression caught by this test flaking.
+    real_write_chunk_notes = write_module._write_chunk_notes
+    vid2_failed_once = {"done": False}
 
-    monkeypatch.setattr(write_module, "call_writer", flaky_write_call_writer)
+    def flaky_write_chunk_notes(chunk_path, topics_path):
+        write_call_order.append(chunk_path.name)
+        if chunk_path.name.startswith("vid2") and not vid2_failed_once["done"]:
+            vid2_failed_once["done"] = True
+            raise RuntimeError("simulated crash on video 2's write")
+        return real_write_chunk_notes(chunk_path, topics_path)
+
+    monkeypatch.setattr(write_module, "_write_chunk_notes", flaky_write_chunk_notes)
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes.")
     monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
 
     with pytest.raises(RuntimeError, match="simulated crash on video 2"):
@@ -281,15 +290,22 @@ def test_resume_after_crash_mid_refine_does_not_reverify_a_passed_chunk(tmp_path
 
     write_call_order: list = []
 
-    def flaky_write_call_writer(prompt, **kw):
-        write_call_order.append(prompt)
-        # 1st call (video1) succeeds; 2nd call (video2, pre-crash) fails;
-        # 3rd call (video2, on resume) succeeds.
-        if len(write_call_order) == 2:
-            raise RuntimeError("simulated crash on video 2's write")
-        return "## Neural Networks\n\nNotes."
+    # graph.py now writes each video's chapter concurrently, so "the Nth
+    # call overall" no longer reliably means "video2's call" -- target the
+    # failure at video2 specifically (via chunk_path) instead of a global
+    # call count, same fix as the sibling test above.
+    real_write_chunk_notes = write_module._write_chunk_notes
+    vid2_failed_once = {"done": False}
 
-    monkeypatch.setattr(write_module, "call_writer", flaky_write_call_writer)
+    def flaky_write_chunk_notes(chunk_path, topics_path):
+        write_call_order.append(chunk_path.name)
+        if chunk_path.name.startswith("vid2") and not vid2_failed_once["done"]:
+            vid2_failed_once["done"] = True
+            raise RuntimeError("simulated crash on video 2's write")
+        return real_write_chunk_notes(chunk_path, topics_path)
+
+    monkeypatch.setattr(write_module, "_write_chunk_notes", flaky_write_chunk_notes)
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes.")
 
     judge_call_count = {"n": 0}
 

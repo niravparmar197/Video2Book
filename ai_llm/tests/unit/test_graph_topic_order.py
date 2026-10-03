@@ -201,6 +201,121 @@ def test_run_book_topic_order_video_mode_stream_calls_run_frames_per_chunk(tmp_p
     assert (output_dir / "work" / "frames" / "vid2_000.json").exists()
 
 
+def test_run_book_topic_order_runs_frames_and_topics_concurrently(tmp_path, monkeypatch):
+    """sprints/v10 Task 1: same parallel frames/topics wiring as the
+    video-order graph (test_graph.py's matching test) -- frames is
+    independent of topics/plan/order/outline/write/book_pass in topic mode
+    too, and is wired as a parallel branch off `chunk`. Asserts on start-time
+    overlap, not total wall-clock, for the same reason: real SqliteSaver
+    checkpoint I/O adds variable overhead unrelated to whether the two
+    branches overlap.
+    """
+    import time
+
+    output_dir = tmp_path / "output" / "some-book"
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+
+    start_times: dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    def fake_run_frames(video_id, video_url, chunk, out_dir):
+        start_times.setdefault("frames", time.perf_counter() - t0)
+        time.sleep(0.3)
+        frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
+        frames_path.parent.mkdir(parents=True, exist_ok=True)
+        frames_path.write_text('{"video_id": "%s", "chunk_index": 0, "frames": []}' % video_id)
+        return frames_path
+
+    def slow_topics_call_writer(prompt, **kw):
+        start_times.setdefault("topics", time.perf_counter() - t0)
+        time.sleep(0.3)
+        return '["gradient descent"]'
+
+    monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
+    monkeypatch.setattr(graph_module, "run_frames", fake_run_frames)
+    monkeypatch.setattr(topics_module, "call_writer", slow_topics_call_writer)
+    monkeypatch.setattr(
+        plan_module,
+        "call_writer",
+        lambda prompt, **kw: json.dumps(
+            [
+                {
+                    "title": "Gradient Descent",
+                    "level": 1,
+                    "needs": [],
+                    "sources": [
+                        {"video_id": "vid1", "chunk_index": 0},
+                        {"video_id": "vid2", "chunk_index": 0},
+                    ],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        write_module, "call_writer", lambda prompt, **kw: "## Gradient Descent\n\nSynthesized."
+    )
+    monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
+
+    graph_module.run_book(TEST_PLAYLIST_URL, output_dir)
+
+    assert "frames" in start_times and "topics" in start_times
+    gap = abs(start_times["frames"] - start_times["topics"])
+    assert gap < 0.2, (
+        f"frames started at {start_times['frames']:.3f}s, topics at "
+        f"{start_times['topics']:.3f}s (gap {gap:.3f}s) -- expected both to "
+        f"start together as parallel branches off chunk, not sequentially"
+    )
+
+
+def test_run_book_topic_order_zero_topics_does_not_crash_at_compile(tmp_path, monkeypatch):
+    """sprints/v11: a real production crash. When topics extraction
+    degrades to an empty list for every chunk (topics.py's own documented,
+    intentional crash-safety behavior when the LLM never returns a
+    parseable array, even after a retry), the merged plan and outline end
+    up empty too -- but book_pass still runs (it has no early-return for
+    zero chapters) and produced a truthy book_pass dict, which the render
+    node used to treat as "yes, render a topic index chapter" regardless
+    of whether there was anything to put in it. Rendering
+    \\begin{enumerate}\\end{enumerate} with zero \\item entries is a real
+    LaTeX fatal error ("Something's wrong--perhaps a missing \\item"),
+    caught live against a real video whose transcript was fine but whose
+    topics-extraction LLM call degraded. This must not crash: an empty
+    topic index chapter is simply omitted, same as glossary already does
+    via has_glossary = bool(glossary_entries).
+    """
+    output_dir = tmp_path / "output" / "some-book"
+
+    monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
+    monkeypatch.setattr(topics_module, "call_writer", lambda prompt, **kw: "[]")
+    monkeypatch.setattr(plan_module, "call_writer", lambda prompt, **kw: "[]")
+
+    def fake_book_pass_call_writer(prompt, **kw):
+        if "Chapters covered, in order:" in prompt:
+            return "This book has no chapters."
+        if "Chapter notes:" in prompt:
+            return "[]"
+        if "Chapters:" in prompt:
+            return "[]"
+        raise AssertionError(f"unexpected book_pass prompt: {prompt[:200]}")
+
+    monkeypatch.setattr(book_pass_module, "call_writer", fake_book_pass_call_writer)
+    monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
+
+    # No write_module.call_writer mock: zero chapters means the write
+    # step's loop never iterates, so it must never be called at all.
+    def unexpected_write_call(prompt, **kw):
+        raise AssertionError("write should never be called for zero chapters")
+
+    monkeypatch.setattr(write_module, "call_writer", unexpected_write_call)
+
+    graph_module.run_book(TEST_PLAYLIST_URL, output_dir)  # must not raise
+
+    main_tex = (output_dir / "chapters" / "main.tex").read_text(encoding="utf-8")
+    assert r"\input{topic_index}" not in main_tex
+    assert not (output_dir / "chapters" / "topic_index.tex").exists()
+    assert (output_dir / "book.pdf").exists()
+
+
 def test_run_book_topic_order_wires_real_glossary_and_indexes(tmp_path, monkeypatch):
     """sprints/v6 Task 8: book_pass's real output reaches the compiled
     main.tex in topic mode too, not just video mode.

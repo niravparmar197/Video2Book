@@ -32,24 +32,29 @@ _TOPIC_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "write
 logger = logging.getLogger(__name__)
 
 
-def _write_and_refine(initial_prompt: str, transcript: str) -> str:
+def _write_and_refine(initial_prompt: str, transcript: str) -> tuple[str, int, int]:
     """Write, judge, and refine one section up to MAX_REFINE_ATTEMPTS times.
 
     Shared by both BOOK_ORDER modes (video-mode chunks, topic-mode
     sections) so the refine loop is implemented once. Always returns the
     last attempt's notes, even if it never reached PASS_SCORE -- a quality
-    gate must never block the book.
+    gate must never block the book. Also returns the kept attempt's judge
+    score and how many attempts it took (sprints/v9: per-chapter progress
+    sidecar), so callers can persist a real pass/fail signal instead of
+    just "notes exist".
     """
     settings = load_settings()
     prompt = initial_prompt
     notes = ""
+    score = 0
 
     for attempt in range(1, settings.max_refine_attempts + 1):
         notes = call_writer(prompt).strip()
         result = run_verify(transcript, notes)
+        score = result.score
 
-        if result.score >= settings.pass_score:
-            return notes
+        if score >= settings.pass_score:
+            return notes, score, attempt
 
         if attempt < settings.max_refine_attempts:
             prompt = (
@@ -66,7 +71,7 @@ def _write_and_refine(initial_prompt: str, transcript: str) -> str:
                 result.score,
             )
 
-    return notes
+    return notes, score, settings.max_refine_attempts
 
 
 def _load_prompt(transcript: str, topics: list[str]) -> str:
@@ -75,7 +80,7 @@ def _load_prompt(transcript: str, topics: list[str]) -> str:
     return template.format(transcript=transcript, topics=topics_list)
 
 
-def _write_chunk_notes(chunk_path: Path, topics_path: Path) -> str:
+def _write_chunk_notes(chunk_path: Path, topics_path: Path) -> tuple[str, int, int]:
     chunk = json.loads(chunk_path.read_text(encoding="utf-8"))
     topics_payload = json.loads(topics_path.read_text(encoding="utf-8"))
     transcript = chunk["text"]
@@ -92,6 +97,24 @@ def notes_output_path(video_id: str, output_dir: str | Path) -> Path:
     return Path(output_dir) / "work" / "notes" / f"{video_id}.md"
 
 
+def chapter_status_path(key: str, output_dir: str | Path) -> Path:
+    """The deterministic work/notes/<key>.status.json path for a chapter --
+    sibling of notes_output_path's .md, same <key> (sprints/v9: per-chapter
+    progress). Written alongside the notes file once the chapter's
+    write-and-verify loop finishes."""
+    return Path(output_dir) / "work" / "notes" / f"{key}.status.json"
+
+
+def _write_chapter_status(key: str, output_dir: str | Path, score: int, attempts: int) -> None:
+    settings = load_settings()
+    status_path = chapter_status_path(key, output_dir)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps({"score": score, "attempts": attempts, "passed": score >= settings.pass_score}),
+        encoding="utf-8",
+    )
+
+
 def run_write(video_id: str, output_dir: str | Path) -> Path:
     """Write one Markdown notes file for a video from its chunks + topics."""
     output_dir = Path(output_dir)
@@ -103,15 +126,21 @@ def run_write(video_id: str, output_dir: str | Path) -> Path:
         raise FileNotFoundError(f"no chunks found for video_id={video_id} in {chunks_dir}")
 
     sections = []
+    scores = []
+    attempts_list = []
     for chunk_path in chunk_paths:
         topics_path = topics_dir / chunk_path.name
         if not topics_path.exists():
             raise FileNotFoundError(f"missing topics file for chunk: {topics_path}")
-        sections.append(_write_chunk_notes(chunk_path, topics_path))
+        notes, score, attempts = _write_chunk_notes(chunk_path, topics_path)
+        sections.append(notes)
+        scores.append(score)
+        attempts_list.append(attempts)
 
     notes_path = notes_output_path(video_id, output_dir)
     notes_path.parent.mkdir(parents=True, exist_ok=True)
     notes_path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
+    _write_chapter_status(video_id, output_dir, min(scores), max(attempts_list))
     return notes_path
 
 
@@ -147,9 +176,11 @@ def run_write_topic(topic: dict, output_dir: str | Path) -> Path:
 
     prompt = _load_topic_prompt(topic["title"], sources)
     transcript = "\n\n".join(source["text"] for source in sources)
-    notes = _write_and_refine(prompt, transcript)
+    notes, score, attempts = _write_and_refine(prompt, transcript)
 
-    notes_path = notes_output_path(f"topic_{topic['slug']}", output_dir)
+    key = f"topic_{topic['slug']}"
+    notes_path = notes_output_path(key, output_dir)
     notes_path.parent.mkdir(parents=True, exist_ok=True)
     notes_path.write_text(notes + "\n", encoding="utf-8")
+    _write_chapter_status(key, output_dir, score, attempts)
     return notes_path

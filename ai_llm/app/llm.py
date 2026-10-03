@@ -6,6 +6,7 @@ chain. Claude is not a runtime option; no key is available.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Callable
 
@@ -43,11 +44,16 @@ RATE_LIMITS_RPM = {
     "gemini": 10,
 }
 
-# Per-provider timestamp (via `clock`) of the last paced call, process-wide.
-# Deliberately module-level: call_writer is a plain function invoked from
-# many nodes across one run, and pacing must hold across all of them, not
-# just within a single call_writer invocation.
+# Per-provider timestamp (via `clock`) of the next free call slot,
+# process-wide. Deliberately module-level: call_writer is a plain function
+# invoked from many nodes across one run, and pacing must hold across all of
+# them, not just within a single call_writer invocation. graph.py now calls
+# call_writer concurrently (bounded thread pool) for independent chunks/
+# chapters, so _pace_lock guards this dict -- without it, two threads can
+# both read the same `last`, both decide they're clear to go, and both fire
+# in the same instant, defeating the whole point of proactive pacing.
 _last_call_at: dict[str, float] = {}
+_pace_lock = threading.Lock()
 
 
 class LLMProviderError(RuntimeError):
@@ -58,21 +64,25 @@ def _pace(provider: str, sleep: Callable[[float], None], clock: Callable[[], flo
     """Sleep as needed so consecutive calls to `provider` stay under its
     configured RPM -- applied before each call, proactively, not just as a
     reaction to a 429.
+
+    Reserves this call's slot under the lock (a fast, non-blocking dict
+    update) and only then sleeps outside the lock, so concurrent callers
+    queue up for distinct slots instead of serializing on the sleep itself.
     """
     rpm = RATE_LIMITS_RPM.get(provider)
     if not rpm:
         return
 
     min_interval = 60.0 / rpm
-    now = clock()
-    last = _last_call_at.get(provider)
-    if last is not None:
-        elapsed = now - last
-        if elapsed < min_interval:
-            sleep(min_interval - elapsed)
-            now = last + min_interval
+    with _pace_lock:
+        now = clock()
+        last = _last_call_at.get(provider)
+        next_slot = now if last is None else max(now, last + min_interval)
+        _last_call_at[provider] = next_slot
 
-    _last_call_at[provider] = now
+    wait = next_slot - clock()
+    if wait > 0:
+        sleep(wait)
 
 
 def _build_client(provider: str, api_key: str, model: str) -> Any:
@@ -88,11 +98,19 @@ def _build_client(provider: str, api_key: str, model: str) -> Any:
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        # max_retries=0: ChatGoogleGenerativeAI defaults to retrying 429s
+        # itself (up to 6x, respecting the server's suggested delay) before
+        # ever raising back to _call_once. Stacked under call_writer's own
+        # MAX_ATTEMPTS/BACKOFF_SECONDS retry, that turned one exhausted
+        # *daily* quota (which no amount of retrying fixes) into a 20+
+        # minute stall -- verified against the real API. call_writer is
+        # already the single place that owns retry/backoff/fallback timing.
         return ChatGoogleGenerativeAI(
             model=model,
             google_api_key=api_key,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
         )
     raise ValueError(f"unknown LLM provider: {provider}")
 

@@ -9,7 +9,7 @@ import pytest
 
 from app.nodes import verify as verify_module
 from app.nodes import write as write_module
-from app.nodes.write import run_write, run_write_topic
+from app.nodes.write import chapter_status_path, run_write, run_write_topic
 
 
 def _write_chunk_and_topics(output_dir, video_id, chunk_index, text, topics):
@@ -288,3 +288,83 @@ def test_run_write_topic_gives_up_after_max_refine_attempts(tmp_path, monkeypatc
     assert len(write_calls) == 3
     assert notes_path.exists()
     assert "Always bad." in notes_path.read_text(encoding="utf-8")
+
+
+# --- Per-chapter progress sidecar (sprints/v9) ---------------------------
+
+
+def test_write_and_refine_returns_score_and_attempts_when_passing_first_try(monkeypatch):
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Section\n\nNotes.")
+    monkeypatch.setattr(
+        verify_module, "call_writer", lambda prompt, **kw: json.dumps({"score": 9, "feedback": "great"})
+    )
+
+    notes, score, attempts = write_module._write_and_refine("prompt", "transcript")
+
+    assert score == 9
+    assert attempts == 1
+    assert notes == "## Section\n\nNotes."
+
+
+def test_write_and_refine_returns_last_score_and_max_attempts_when_never_passing(monkeypatch):
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Section\n\nAlways bad.")
+    monkeypatch.setattr(
+        verify_module,
+        "call_writer",
+        lambda prompt, **kw: json.dumps({"score": 2, "feedback": "still bad"}),
+    )
+
+    _, score, attempts = write_module._write_and_refine("prompt", "transcript")
+
+    settings = write_module.load_settings()
+    assert score == 2
+    assert attempts == settings.max_refine_attempts
+
+
+def test_run_write_writes_chapter_status_sidecar_with_aggregated_score_and_attempts(
+    tmp_path, monkeypatch
+):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(output_dir, "vid1", 0, text="chunk zero content", topics=["a"])
+    _write_chunk_and_topics(output_dir, "vid1", 1, text="chunk one content", topics=["b"])
+
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Section\n\nNotes.")
+
+    def fake_judge_call_writer(prompt, **kw):
+        if "chunk zero content" in prompt:
+            return json.dumps({"score": 9, "feedback": "great"})
+        return json.dumps({"score": 2, "feedback": "still bad"})
+
+    monkeypatch.setattr(verify_module, "call_writer", fake_judge_call_writer)
+
+    run_write("vid1", output_dir)
+
+    status_path = chapter_status_path("vid1", output_dir)
+    assert status_path.exists()
+    # chunk zero passes attempt 1 (score 9); chunk one exhausts all 3
+    # attempts stuck at score 2 -- the weaker section's score/attempts win.
+    assert json.loads(status_path.read_text(encoding="utf-8")) == {
+        "score": 2,
+        "attempts": 3,
+        "passed": False,
+    }
+
+
+def test_run_write_topic_writes_chapter_status_sidecar(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(output_dir, "vid1", 0, text="Some transcript text.", topics=["gd"])
+
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Section\n\nNotes.")
+    monkeypatch.setattr(
+        verify_module, "call_writer", lambda prompt, **kw: json.dumps({"score": 9, "feedback": "great"})
+    )
+
+    run_write_topic(_TOPIC, output_dir)
+
+    status_path = chapter_status_path("topic_gradient-descent", output_dir)
+    assert status_path.exists()
+    assert json.loads(status_path.read_text(encoding="utf-8")) == {
+        "score": 9,
+        "attempts": 1,
+        "passed": True,
+    }

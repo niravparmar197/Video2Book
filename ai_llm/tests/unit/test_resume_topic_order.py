@@ -88,15 +88,24 @@ def test_resume_continues_topic_order_after_crash_without_redoing_completed_topi
 
     write_call_order: list = []
 
-    def flaky_write_call_writer(prompt, **kw):
-        write_call_order.append(prompt)
-        # 1st call (topic one) succeeds; 2nd call (topic two, pre-crash)
-        # fails; 3rd call (topic two, on resume) succeeds.
-        if len(write_call_order) == 2:
-            raise RuntimeError("simulated crash on topic 2's write")
-        return "## Notes\n\nSynthesized."
+    # graph.py now writes each topic's chapter concurrently, so "the Nth
+    # call overall" no longer reliably means "topic two's call" -- target
+    # the failure at topic two specifically (via the topic dict itself,
+    # which run_write_topic receives directly) instead of a global call
+    # count, same fix as test_resume.py's sibling tests.
+    real_run_write_topic = write_module.run_write_topic
+    topic_two_failed_once = {"done": False}
 
-    monkeypatch.setattr(write_module, "call_writer", flaky_write_call_writer)
+    def flaky_run_write_topic(topic, output_dir):
+        write_call_order.append(topic["slug"])
+        if topic["slug"] == "topic-two" and not topic_two_failed_once["done"]:
+            topic_two_failed_once["done"] = True
+            raise RuntimeError("simulated crash on topic 2's write")
+        return real_run_write_topic(topic, output_dir)
+
+    monkeypatch.setattr(write_module, "run_write_topic", flaky_run_write_topic)
+    monkeypatch.setattr(graph_module, "run_write_topic", flaky_run_write_topic)
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Notes\n\nSynthesized.")
     monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
 
     with pytest.raises(RuntimeError, match="simulated crash on topic 2"):
@@ -155,13 +164,22 @@ def test_resume_topic_order_after_crash_mid_refine_does_not_reverify_a_passed_to
 
     write_call_order: list = []
 
-    def flaky_write_call_writer(prompt, **kw):
-        write_call_order.append(prompt)
-        if len(write_call_order) == 2:
-            raise RuntimeError("simulated crash on topic 2's write")
-        return "## Notes\n\nSynthesized."
+    # graph.py now writes each topic's chapter concurrently -- same fix as
+    # the sibling test above: target topic two specifically instead of a
+    # global call count.
+    real_run_write_topic = write_module.run_write_topic
+    topic_two_failed_once = {"done": False}
 
-    monkeypatch.setattr(write_module, "call_writer", flaky_write_call_writer)
+    def flaky_run_write_topic(topic, output_dir):
+        write_call_order.append(topic["slug"])
+        if topic["slug"] == "topic-two" and not topic_two_failed_once["done"]:
+            topic_two_failed_once["done"] = True
+            raise RuntimeError("simulated crash on topic 2's write")
+        return real_run_write_topic(topic, output_dir)
+
+    monkeypatch.setattr(write_module, "run_write_topic", flaky_run_write_topic)
+    monkeypatch.setattr(graph_module, "run_write_topic", flaky_run_write_topic)
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Notes\n\nSynthesized.")
 
     judge_call_count = {"n": 0}
 

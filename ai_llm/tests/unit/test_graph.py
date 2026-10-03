@@ -146,6 +146,8 @@ def test_get_progress_returns_empty_for_a_thread_that_never_ran(tmp_path):
         "current_node": None,
         "next_nodes": [],
         "step": 0,
+        "percent": 0,
+        "elapsed_seconds": 0,
     }
 
 
@@ -175,6 +177,48 @@ def test_get_progress_reflects_completed_and_next_node_mid_run(tmp_path, monkeyp
     assert progress["current_node"] == "write"
     assert progress["next_nodes"] == ["write"]
     assert progress["step"] > 0
+    assert progress["percent"] == round(5 / 9 * 100)  # 5 of 9 video-order nodes done
+    assert progress["elapsed_seconds"] >= 0
+
+
+def test_get_progress_reports_frames_done_and_topics_pending_when_only_topics_fails(
+    tmp_path, monkeypatch
+):
+    """sprints/v10 Task 2: frames and topics are parallel branches off
+    `chunk` (sprints/v10 Task 1) -- when topics raises while frames has
+    already succeeded, LangGraph commits each parallel task's checkpoint
+    write independently (confirmed empirically, not superstep-atomically),
+    so `frames` must report as completed and only `topics` as still
+    pending/current -- not both stuck as "next" and not frames wrongly
+    swept into "not yet reached" by the min-pending-index boundary logic.
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    output_dir = tmp_path / "output" / "some-book"
+    saver = InMemorySaver()
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+
+    def fake_run_frames(video_id, video_url, chunk, out_dir):
+        frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
+        frames_path.parent.mkdir(parents=True, exist_ok=True)
+        frames_path.write_text('{"video_id": "%s", "chunk_index": 0, "frames": []}' % video_id)
+        return frames_path
+
+    def boom(prompt, **kw):
+        raise RuntimeError("simulated crash in topics")
+
+    monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
+    monkeypatch.setattr(graph_module, "run_frames", fake_run_frames)
+    monkeypatch.setattr(topics_module, "call_writer", boom)
+
+    with pytest.raises(RuntimeError, match="simulated crash in topics"):
+        graph_module.run_book(TEST_PLAYLIST_URL, output_dir, checkpointer=saver)
+
+    progress = graph_module.get_progress(output_dir, saver, book_order="video", phase="render")
+
+    assert progress["completed_nodes"] == ["fetch", "check_budget", "chunk", "frames"]
+    assert progress["current_node"] == "topics"
+    assert progress["next_nodes"] == ["topics"]
 
 
 def test_get_progress_reports_all_nodes_completed_after_a_full_run(tmp_path, monkeypatch):
@@ -208,6 +252,8 @@ def test_get_progress_reports_all_nodes_completed_after_a_full_run(tmp_path, mon
         "book_pass",
         "render",
     ]
+    assert progress["percent"] == 100
+    assert progress["elapsed_seconds"] >= 0
 
 
 def test_get_progress_normalizes_the_transient_start_pending_state(monkeypatch):
@@ -242,7 +288,107 @@ def test_get_progress_normalizes_the_transient_start_pending_state(monkeypatch):
         "current_node": None,
         "next_nodes": [],
         "step": 0,
+        "percent": 0,
+        "elapsed_seconds": 0,
     }
+
+
+# --- get_chapter_progress (sprints/v9) ------------------------------------
+
+
+def test_get_chapter_progress_returns_empty_list_before_outline_exists(tmp_path):
+    assert graph_module.get_chapter_progress(tmp_path / "output") == []
+
+
+def test_get_chapter_progress_reports_pending_done_and_not_passed_chapters(tmp_path):
+    output_dir = tmp_path / "output"
+    (output_dir / "outline.json").parent.mkdir(parents=True, exist_ok=True)
+    (output_dir / "outline.json").write_text(
+        json.dumps(
+            [
+                {"id": "chapter:vid1", "video_id": "vid1", "title": "Video One", "order": 1},
+                {"id": "chapter:vid2", "video_id": "vid2", "title": "Video Two", "order": 2},
+                {"id": "chapter:vid3", "video_id": "vid3", "title": "Video Three", "order": 3},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    write_module.notes_output_path("vid1", output_dir).parent.mkdir(parents=True, exist_ok=True)
+    write_module.notes_output_path("vid1", output_dir).write_text("notes", encoding="utf-8")
+    write_module.chapter_status_path("vid1", output_dir).write_text(
+        json.dumps({"score": 9, "attempts": 1, "passed": True}), encoding="utf-8"
+    )
+
+    write_module.notes_output_path("vid2", output_dir).write_text("notes", encoding="utf-8")
+    write_module.chapter_status_path("vid2", output_dir).write_text(
+        json.dumps({"score": 5, "attempts": 3, "passed": False}), encoding="utf-8"
+    )
+
+    # vid3: no notes/status files at all -- still pending.
+
+    progress = graph_module.get_chapter_progress(output_dir)
+
+    assert progress == [
+        {
+            "id": "chapter:vid1",
+            "title": "Video One",
+            "status": "done",
+            "score": 9,
+            "attempts": 1,
+            "passed": True,
+        },
+        {
+            "id": "chapter:vid2",
+            "title": "Video Two",
+            "status": "done",
+            "score": 5,
+            "attempts": 3,
+            "passed": False,
+        },
+        {
+            "id": "chapter:vid3",
+            "title": "Video Three",
+            "status": "pending",
+            "score": None,
+            "attempts": None,
+            "passed": None,
+        },
+    ]
+
+
+def test_get_chapter_progress_uses_topic_key_for_topic_mode_chapters(tmp_path):
+    output_dir = tmp_path / "output"
+    (output_dir).mkdir(parents=True, exist_ok=True)
+    (output_dir / "outline.json").write_text(
+        json.dumps(
+            [{"id": "chapter:gradient-descent", "slug": "gradient-descent", "title": "GD", "order": 1}]
+        ),
+        encoding="utf-8",
+    )
+
+    write_module.notes_output_path("topic_gradient-descent", output_dir).parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    write_module.notes_output_path("topic_gradient-descent", output_dir).write_text(
+        "notes", encoding="utf-8"
+    )
+    write_module.chapter_status_path("topic_gradient-descent", output_dir).write_text(
+        json.dumps({"score": 8, "attempts": 2, "passed": True}), encoding="utf-8"
+    )
+
+    progress = graph_module.get_chapter_progress(output_dir)
+
+    assert progress == [
+        {
+            "id": "chapter:gradient-descent",
+            "title": "GD",
+            "status": "done",
+            "score": 8,
+            "attempts": 2,
+            "passed": True,
+        }
+    ]
 
 
 def test_run_plan_stops_before_render(tmp_path, monkeypatch):
@@ -356,6 +502,67 @@ def test_run_book_video_mode_stream_calls_run_frames_per_chunk(tmp_path, monkeyp
     assert sorted(frames_calls) == sorted((vid, 0) for vid, _ in _PLAYLIST_VIDEOS)
     for video_id, _ in _PLAYLIST_VIDEOS:
         assert (output_dir / "work" / "frames" / f"{video_id}_000.json").exists()
+
+
+def test_run_book_runs_frames_and_topics_concurrently_not_sequentially(
+    tmp_path, monkeypatch
+):
+    """sprints/v10 Task 1: frames and topics are independent (frames writes
+    no BookState key `topics`/`write` reads, and vice versa) and are wired
+    as parallel branches off `chunk`, both converging before `render`.
+
+    Asserting on total wall-clock time turned out flaky in practice here:
+    a real SqliteSaver checkpointer (run_book's default when no
+    checkpointer is injected) does real disk I/O per superstep, which adds
+    variable overhead unrelated to whether frames/topics overlap. Instead,
+    this asserts directly on *when* each side's first call starts,
+    recorded via perf_counter() timestamps from inside the fakes -- if
+    frames and topics are running as parallel branches (both become ready
+    in the same superstep right after `chunk`), their first calls start
+    within a few hundred ms of each other regardless of how much
+    unrelated checkpoint/render overhead the rest of the run adds. A
+    sequential chunk->frames->topics chain (the pre-sprints/v10 graph)
+    would instead show topics starting ~0.3s *after* frames' first call
+    finishes, not concurrently with it.
+    """
+    import time
+
+    output_dir = tmp_path / "output" / "some-book"
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+
+    start_times: dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    def fake_run_frames(video_id, video_url, chunk, out_dir):
+        start_times.setdefault("frames", time.perf_counter() - t0)
+        time.sleep(0.3)
+        frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
+        frames_path.parent.mkdir(parents=True, exist_ok=True)
+        frames_path.write_text('{"video_id": "%s", "chunk_index": 0, "frames": []}' % video_id)
+        return frames_path
+
+    def slow_topics_call_writer(prompt, **kw):
+        start_times.setdefault("topics", time.perf_counter() - t0)
+        time.sleep(0.3)
+        return '["neural networks"]'
+
+    monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
+    monkeypatch.setattr(graph_module, "run_frames", fake_run_frames)
+    monkeypatch.setattr(topics_module, "call_writer", slow_topics_call_writer)
+    monkeypatch.setattr(
+        write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes."
+    )
+    monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
+
+    graph_module.run_book(TEST_PLAYLIST_URL, output_dir)
+
+    assert "frames" in start_times and "topics" in start_times
+    gap = abs(start_times["frames"] - start_times["topics"])
+    assert gap < 0.2, (
+        f"frames started at {start_times['frames']:.3f}s, topics at "
+        f"{start_times['topics']:.3f}s (gap {gap:.3f}s) -- expected both to "
+        f"start together as parallel branches off chunk, not sequentially"
+    )
 
 
 def test_run_book_video_mode_captions_only_never_calls_run_frames(tmp_path, monkeypatch):
