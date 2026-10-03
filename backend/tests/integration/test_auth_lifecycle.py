@@ -1,16 +1,12 @@
-from types import SimpleNamespace
+import dataclasses
 
 import api.routers.books as books_module
+from api.config import Settings
 from api.config import settings as real_settings
 
 
-def _settings_with_limit(limit: int) -> SimpleNamespace:
-    return SimpleNamespace(
-        database_url=real_settings.database_url,
-        redis_url=real_settings.redis_url,
-        output_root=real_settings.output_root,
-        max_concurrent_books_per_user=limit,
-    )
+def _settings_with_limit(limit: int) -> Settings:
+    return dataclasses.replace(real_settings, max_concurrent_books_per_user=limit)
 
 
 def _signup(client, email: str) -> dict:

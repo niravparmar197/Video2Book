@@ -8,12 +8,18 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from datetime import datetime, time, timezone
+
 from api import storage
+from api.ai_llm_bridge import estimate_playlist as ai_llm_estimate_playlist
+from api.ai_llm_bridge import get_chapter_progress as ai_llm_get_chapter_progress
 from api.ai_llm_bridge import get_progress as ai_llm_get_progress
+from api.ai_llm_bridge import load_settings as ai_llm_load_settings
 from api.auth import get_current_user
 from api.checkpointer import get_checkpointer
 from api.config import settings
 from api.db import SessionLocal, get_db
+from api.error_tracking import capture_message_with_context
 from api.logging import get_logger
 from api.models import Book, User
 from api.queue import cancel_run_book, enqueue_run_book
@@ -34,6 +40,56 @@ def get_owned_book(db: Session, book_id: str, user: User) -> Book:
     if book is None or book.user_id != user.id:
         raise HTTPException(status_code=404, detail="book not found")
     return book
+
+
+def _check_over_budget(estimates: list) -> None:
+    """Raises 422 if a playlist's estimated total duration/cost exceeds
+    ai_llm's own MAX_BOOK_HOURS/MAX_BOOK_COST_USD -- sprints/v8. Unlike the
+    ai_llm CLI's --force, this API offers no bypass: a shared multi-tenant
+    worker pool/rate-limit budget can't be signed away by one user."""
+    budget = ai_llm_load_settings()
+    total_hours = sum(e.duration_seconds for e in estimates) / 3600
+    if total_hours > budget.max_book_hours:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playlist total duration ({total_hours:.2f}h) exceeds "
+                f"MAX_BOOK_HOURS ({budget.max_book_hours}h)"
+            ),
+        )
+
+    total_cost = sum(e.estimated_cost_usd for e in estimates)
+    if total_cost > budget.max_book_cost_usd:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"playlist estimated cost (${total_cost:.2f}) exceeds "
+                f"MAX_BOOK_COST_USD (${budget.max_book_cost_usd:.2f})"
+            ),
+        )
+
+
+def _check_daily_spend_alert(db: Session) -> None:
+    """Observational only -- never blocks book creation. Sums
+    estimated_cost_usd for every book created since UTC midnight today
+    (including the one just committed) and captures a warning once that
+    total crosses GLOBAL_DAILY_SPEND_ALERT_USD. Can't fire in production
+    yet since every real estimated_cost_usd is 0.0 until a paid provider
+    exists (sprints/v8)."""
+    today_start = datetime.combine(datetime.now(timezone.utc).date(), time.min, tzinfo=timezone.utc)
+    today_total = db.execute(
+        select(func.coalesce(func.sum(Book.estimated_cost_usd), 0.0)).where(
+            Book.created_at >= today_start
+        )
+    ).scalar_one()
+
+    if today_total >= settings.global_daily_spend_alert_usd:
+        capture_message_with_context(
+            f"global daily spend estimate (${today_total:.2f}) has reached "
+            f"the GLOBAL_DAILY_SPEND_ALERT_USD threshold "
+            f"(${settings.global_daily_spend_alert_usd:.2f})",
+            level="warning",
+        )
 
 
 @router.post("/youtube", response_model=BookResponse, status_code=201)
@@ -57,10 +113,18 @@ async def create_book(
             ),
         )
 
-    book = Book(url=str(payload.url), status="queued", user_id=user.id)
+    estimates = await asyncio.to_thread(ai_llm_estimate_playlist, str(payload.url))
+    _check_over_budget(estimates)
+    total_cost = sum(e.estimated_cost_usd for e in estimates)
+
+    book = Book(
+        url=str(payload.url), status="queued", user_id=user.id, estimated_cost_usd=total_cost
+    )
     db.add(book)
     db.commit()
     db.refresh(book)
+
+    _check_daily_spend_alert(db)
 
     logger = get_logger(book_id=book.id, step="create")
     logger.info("book created")
@@ -146,9 +210,12 @@ def _sse(event: str, data: dict) -> str:
 async def _progress_events(book_id: str) -> AsyncIterator[str]:
     """Polls the book's status + LangGraph checkpoint every
     `EVENTS_POLL_SECONDS` and yields an SSE `progress` event only when the
-    reported node position changed since the last yield -- no-op ticks
-    aren't sent. Yields one final `done`/`failed` event and stops once the
-    book leaves its in-flight statuses (sprints/v7 Task 7)."""
+    reported node position or any chapter's status changed since the last
+    yield -- no-op ticks aren't sent. A chapter finishing while the
+    book-wide node position stays put (e.g. chapter 4 of 12 during one long
+    `write` node run) now counts as a real change (sprints/v9). Yields one
+    final `done`/`failed` event and stops once the book leaves its
+    in-flight statuses (sprints/v7 Task 7)."""
     output_dir = Path(settings.output_root) / book_id
     checkpointer = get_checkpointer()
     last_sent = None
@@ -172,7 +239,14 @@ async def _progress_events(book_id: str) -> AsyncIterator[str]:
         progress = await asyncio.to_thread(
             ai_llm_get_progress, output_dir, checkpointer, None, phase
         )
-        key = (progress["current_node"], tuple(progress["completed_nodes"]))
+        chapters = await asyncio.to_thread(ai_llm_get_chapter_progress, output_dir)
+        progress["chapters"] = chapters
+
+        key = (
+            progress["current_node"],
+            tuple(progress["completed_nodes"]),
+            tuple((c["id"], c["status"], c["score"], c["attempts"]) for c in chapters),
+        )
         if key != last_sent:
             last_sent = key
             yield _sse("progress", progress)

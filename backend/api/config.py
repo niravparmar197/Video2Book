@@ -38,6 +38,14 @@ class Settings:
 
     events_poll_seconds: float = float(os.environ.get("EVENTS_POLL_SECONDS", "2"))
 
+    # Observational only (sprints/v8) -- sums estimated_cost_usd across every
+    # book created since UTC midnight and warns past this threshold. Can't
+    # fire in production yet: every real estimated_cost_usd is 0.0 until a
+    # paid provider is configured (both NVIDIA and Gemini are free tiers).
+    global_daily_spend_alert_usd: float = float(
+        os.environ.get("GLOBAL_DAILY_SPEND_ALERT_USD", "20")
+    )
+
     # The frontend/ dev server's origin -- browsers block cross-origin
     # fetch() calls (frontend on :3000, this API on :8000) unless the
     # server explicitly allows it via CORS.

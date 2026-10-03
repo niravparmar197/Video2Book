@@ -252,17 +252,17 @@ checkpoint tables on first run, no-ops after.
 **`GET /books/{id}/events`**: a Server-Sent Events stream of live
 pipeline progress, polling the shared checkpointer's state every
 `EVENTS_POLL_SECONDS` (default 2) and emitting a `progress` event only
-when the current/completed node actually changed, ending in one `done` or
-`failed` event:
+when the current/completed node (or, since v9, any chapter's status)
+actually changed, ending in one `done` or `failed` event:
 
 ```
 curl -N http://127.0.0.1:8000/books/<id>/events -H "X-API-Key: $API_KEY"
 
 event: progress
-data: {"completed_nodes": ["fetch", "chunk"], "current_node": "frames", "next_nodes": ["topics"], "step": 2}
+data: {"completed_nodes": ["fetch", "chunk", "frames"], "current_node": "topics", "next_nodes": ["write"], "step": 3, "chapters": []}
 
 event: progress
-data: {"completed_nodes": ["fetch", "chunk", "frames"], "current_node": "topics", "next_nodes": ["write"], "step": 3}
+data: {"completed_nodes": ["fetch", "chunk", "frames", "topics"], "current_node": "write", "next_nodes": ["outline"], "step": 4, "chapters": [{"id": "chapter:vid1", "title": "Introduction", "status": "done", "score": 9, "attempts": 1, "passed": true}, {"id": "chapter:vid2", "title": "Gradient Descent", "status": "pending", "score": null, "attempts": null, "passed": null}]}
 
 event: done
 data: {"completed_nodes": ["fetch", "chunk", "frames", "topics", "write", "outline", "book_pass", "render"], "current_node": null, "next_nodes": [], "step": 8}
@@ -270,6 +270,60 @@ data: {"completed_nodes": ["fetch", "chunk", "frames", "topics", "write", "outli
 
 Same 404 (unknown book / another user's book) and 401 (no auth) rules as
 `GET /books/{id}`.
+
+## Cost ceiling + daily spend alert (v8)
+
+**Upfront budget check**: `POST /books/youtube` now estimates the
+playlist (`ai_llm`'s own `app.estimate.estimate_playlist` — no LLM call,
+same calculation its `--estimate` CLI flag makes) *before* creating a
+`Book` row or queuing any job. If the total duration or estimated cost
+exceeds `MAX_BOOK_HOURS`/`MAX_BOOK_COST_USD`, the request is rejected with
+`422` and nothing is created. These limits are read from `ai_llm`'s own
+settings (`api/ai_llm_bridge.py` re-exports `load_settings`), never a
+separate backend copy that could drift out of sync. Unlike the `ai_llm`
+CLI's `--force` flag, there is **no bypass** here — a shared multi-tenant
+worker pool and provider rate-limit budget can't be signed away by one
+user's request.
+
+`Book.estimated_cost_usd` is persisted at creation time (from the same
+estimate that passed the check above), visible on every `BookResponse`.
+
+**Global daily spend alert**: `GLOBAL_DAILY_SPEND_ALERT_USD` (default 20)
+— after each book is created, the sum of `estimated_cost_usd` for every
+book created since UTC midnight (including the new one) is checked
+against this threshold. Crossing it captures a Sentry warning via
+`capture_message_with_context` (a safe no-op with `SENTRY_DSN` unset, same
+as the existing exception tracking) — this is purely observational and
+never blocks a request. Since both NVIDIA and Gemini are free tiers,
+every real `estimated_cost_usd` is `0.0` today, so this alert cannot
+actually fire in production yet — the wiring is in place for the day a
+paid provider is added.
+
+## Per-chapter progress (v9)
+
+`GET /books/{id}/events`'s `progress` payload now includes a `chapters`
+array (see the updated example above), one entry per chapter in the
+book's outline: `{"id", "title", "status": "pending" | "done", "score",
+"attempts", "passed"}`. A book can spend most of its wall-clock time
+inside a single `write` node while it writes and judges every chapter one
+at a time — previously `/events` went silent for that entire stretch since
+the book-wide node position never changed; now a chapter finishing counts
+as a real change and gets its own event.
+
+`score`/`attempts`/`passed` are `null` until a chapter is `"done"`:
+`score` is the judge's score for whichever attempt `ai_llm` kept (the one
+that passed, or the last one if it never did), `attempts` is how many
+tries it took (1 means it passed on the first attempt), and `passed` is
+whether that score ever reached `PASS_SCORE`. A chapter can be `"done"`
+with `passed: false` — root `AGENTS.md`'s quality gate never blocks the
+book, so a chapter that exhausts `MAX_REFINE_ATTEMPTS` still gets its best
+attempt kept and included; `passed: false` is a real diagnostic signal to
+go look at that chapter, not a failure state.
+
+This data is computed fresh from disk on every poll (`ai_llm`'s
+`work/notes/<key>.md` + `<key>.status.json` sidecar, one pair per chapter)
+— nothing new is written to Postgres, the same way book-wide node progress
+already isn't.
 
 ## Tests
 
@@ -287,7 +341,7 @@ is monkeypatched at the `api.jobs.run_book.ai_llm_run_book` boundary. S3
 is real (the local S3Mock container), same as Postgres/Redis — no S3
 client mocking either.
 
-## What's in v1 / v2 / v3 / v4 / v5 / v6 / v7 / what's not
+## What's in v1 / v2 / v3 / v4 / v5 / v6 / v7 / v8 / v9 / what's not
 
 - **v1** (`sprints/v1/PRD.md`): create → queue → worker → status core loop.
 - **v2** (`sprints/v2/PRD.md`): `/health`, structured JSON logging,
@@ -304,8 +358,14 @@ client mocking either.
 - **v7** (`sprints/v7/PRD.md`): Postgres checkpointer for LangGraph
   (replaces per-book SQLite for API-created books), live per-node
   progress via `GET /books/{id}/events` (SSE).
+- **v8** (`sprints/v8/PRD.md`): upfront `MAX_BOOK_HOURS`/`MAX_BOOK_COST_USD`
+  rejection at book creation (no bypass), `Book.estimated_cost_usd`
+  persisted, `GLOBAL_DAILY_SPEND_ALERT_USD` global daily spend alert.
+- **v9** (`sprints/v9/PRD.md`): per-chapter `score`/`attempts`/`passed`
+  progress in `GET /books/{id}/events`'s `chapters` array.
 - Still deferred: password/JWT/OAuth login, key rotation, actually
   honoring a reordered outline (needs an `ai_llm` change, not just this
-  API), per-chapter pass/fail status, scheduling the retention script, a
-  global spend ceiling, and the rest of `backend/AGENTS.md`'s
-  production-readiness checklist.
+  API), scheduling the retention script, and the rest of
+  `backend/AGENTS.md`'s production-readiness checklist (backups, load
+  testing, LangSmith dashboard, Bull Board, legal terms,
+  rollback-on-failed-eval).

@@ -21,3 +21,9 @@ def capture_exception_with_context(exc: BaseException, **context: str) -> None:
     for key, value in context.items():
         sentry_sdk.set_tag(key, value)
     sentry_sdk.capture_exception(exc)
+
+
+def capture_message_with_context(message: str, level: str = "warning", **context: str) -> None:
+    for key, value in context.items():
+        sentry_sdk.set_tag(key, value)
+    sentry_sdk.capture_message(message, level=level)

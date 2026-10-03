@@ -8,15 +8,22 @@ os.environ.setdefault(
 )
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("OUTPUT_ROOT", "./test_output")
+# sprints/v11: isolates test-enqueued BullMQ jobs from a real dev/prod
+# worker's queue -- same REDIS_URL (Redis is cheap to share), different
+# queue name, so tests never sit in front of real work and are never
+# processed by a real worker either. See api/queue.py's QUEUE_NAME comment.
+os.environ.setdefault("QUEUE_NAME", "run_book_test")
 
 import io
 import json
 import logging
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+import api.routers.books as books_module
 from api.auth import generate_api_key, hash_api_key
 from api.db import SessionLocal, engine
 from api.logging import JsonFormatter
@@ -37,6 +44,22 @@ def _clean_tables():
     with engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
+
+
+@pytest.fixture(autouse=True)
+def _default_playlist_estimate(monkeypatch):
+    """POST /books/youtube now estimates a playlist before creating a Book
+    (sprints/v8) -- a real network call to YouTube ai_llm's own
+    estimate_playlist makes. Stubbed to a small in-budget result by default
+    (never a real call, per AGENTS.md's testing rule) so every existing
+    test that creates a book doesn't need its own stub; a test that cares
+    about the estimate (over-budget rejection, the daily spend alert)
+    overrides this with its own monkeypatch.setattr call."""
+
+    def _fake_estimate_playlist(url, chunk_minutes=None):
+        return [SimpleNamespace(duration_seconds=600, estimated_cost_usd=0.0)]
+
+    monkeypatch.setattr(books_module, "ai_llm_estimate_playlist", _fake_estimate_playlist)
 
 
 @pytest.fixture

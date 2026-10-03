@@ -54,3 +54,25 @@ def test_capture_exception_with_context_is_safe_without_init():
     # No sentry_sdk.init() call anywhere in this test -- the SDK's own
     # no-client-configured no-op behavior is what's under test here.
     error_tracking.capture_exception_with_context(RuntimeError("never initialized"), book_id="x")
+
+
+def test_capture_message_with_context_sets_tags_then_captures(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sentry_sdk, "set_tag", lambda k, v: calls.append(("tag", k, v)))
+    monkeypatch.setattr(
+        sentry_sdk,
+        "capture_message",
+        lambda message, level=None: calls.append(("capture", message, level)),
+    )
+
+    error_tracking.capture_message_with_context(
+        "daily spend over threshold", level="warning", book_id="abc123"
+    )
+
+    tag_calls = [c for c in calls if c[0] == "tag"]
+    assert ("tag", "book_id", "abc123") in tag_calls
+    assert calls[-1] == ("capture", "daily spend over threshold", "warning")
+
+
+def test_capture_message_with_context_is_safe_without_init():
+    error_tracking.capture_message_with_context("never initialized", level="warning")

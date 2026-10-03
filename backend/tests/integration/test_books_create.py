@@ -1,19 +1,16 @@
+import dataclasses
 from types import SimpleNamespace
 
 from sqlalchemy import select
 
 import api.routers.books as books_module
+from api.config import Settings
 from api.config import settings as real_settings
 from api.models import Book
 
 
-def _settings_with_limit(limit: int) -> SimpleNamespace:
-    return SimpleNamespace(
-        database_url=real_settings.database_url,
-        redis_url=real_settings.redis_url,
-        output_root=real_settings.output_root,
-        max_concurrent_books_per_user=limit,
-    )
+def _settings_with_limit(limit: int) -> Settings:
+    return dataclasses.replace(real_settings, max_concurrent_books_per_user=limit)
 
 
 def test_create_book_returns_201_and_queued_status(client, db_session, user, auth_headers):
@@ -111,3 +108,128 @@ def test_create_book_done_and_failed_books_dont_count_toward_limit(
         "/books/youtube", json={"url": "https://youtu.be/c"}, headers=auth_headers
     )
     assert resp.status_code == 201
+
+
+def test_create_book_persists_the_estimated_cost(client, db_session, auth_headers, monkeypatch):
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [
+            SimpleNamespace(duration_seconds=1200, estimated_cost_usd=1.23)
+        ],
+    )
+
+    resp = client.post(
+        "/books/youtube", json={"url": "https://www.youtube.com/watch?v=abc123"}, headers=auth_headers
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["estimated_cost_usd"] == 1.23
+
+    book = db_session.get(Book, resp.json()["id"])
+    assert book.estimated_cost_usd == 1.23
+
+
+def test_create_book_defaults_estimated_cost_to_zero_when_unset(client, db_session, user):
+    book = Book(url="https://youtu.be/a", status="queued", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    assert book.estimated_cost_usd == 0.0
+
+
+def test_create_book_422_over_max_book_hours(client, db_session, auth_headers, monkeypatch):
+    budget = dataclasses.replace(books_module.ai_llm_load_settings(), max_book_hours=1)
+    monkeypatch.setattr(books_module, "ai_llm_load_settings", lambda: budget)
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [
+            SimpleNamespace(duration_seconds=2 * 3600, estimated_cost_usd=0.0)
+        ],
+    )
+
+    resp = client.post(
+        "/books/youtube", json={"url": "https://www.youtube.com/watch?v=abc123"}, headers=auth_headers
+    )
+
+    assert resp.status_code == 422
+    assert "MAX_BOOK_HOURS" in resp.json()["detail"]
+    assert db_session.execute(select(Book)).scalars().first() is None
+
+
+def test_create_book_422_over_max_book_cost_usd(client, db_session, auth_headers, monkeypatch):
+    budget = dataclasses.replace(books_module.ai_llm_load_settings(), max_book_cost_usd=1.0)
+    monkeypatch.setattr(books_module, "ai_llm_load_settings", lambda: budget)
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [
+            SimpleNamespace(duration_seconds=600, estimated_cost_usd=5.0)
+        ],
+    )
+
+    resp = client.post(
+        "/books/youtube", json={"url": "https://www.youtube.com/watch?v=abc123"}, headers=auth_headers
+    )
+
+    assert resp.status_code == 422
+    assert "MAX_BOOK_COST_USD" in resp.json()["detail"]
+    assert db_session.execute(select(Book)).scalars().first() is None
+
+
+def test_create_book_triggers_daily_spend_alert_once_threshold_crossed(
+    client, auth_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        books_module, "settings", dataclasses.replace(real_settings, global_daily_spend_alert_usd=10.0)
+    )
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [
+            SimpleNamespace(duration_seconds=600, estimated_cost_usd=6.0)
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(
+        books_module, "capture_message_with_context", lambda message, **kw: calls.append(message)
+    )
+
+    for i in range(2):
+        resp = client.post(
+            "/books/youtube", json={"url": f"https://youtu.be/{i}"}, headers=auth_headers
+        )
+        assert resp.status_code == 201
+
+    assert len(calls) == 1
+    assert "12.00" in calls[0]
+    assert "10.00" in calls[0]
+
+
+def test_create_book_no_alert_while_under_daily_spend_threshold(
+    client, auth_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        books_module, "settings", dataclasses.replace(real_settings, global_daily_spend_alert_usd=10.0)
+    )
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [
+            SimpleNamespace(duration_seconds=600, estimated_cost_usd=1.0)
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(
+        books_module, "capture_message_with_context", lambda message, **kw: calls.append(message)
+    )
+
+    for i in range(3):
+        resp = client.post(
+            "/books/youtube", json={"url": f"https://youtu.be/{i}"}, headers=auth_headers
+        )
+        assert resp.status_code == 201
+
+    assert calls == []
