@@ -5,3 +5,5 @@ __pycache__/
 output/
 test_output/
 *.egg-info/
+*.log
+book.pdf
