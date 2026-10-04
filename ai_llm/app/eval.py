@@ -109,7 +109,8 @@ def dataset_fingerprint(examples: list[dict]) -> str:
 
 
 def verdict(average: float, baseline: dict | None, gate_on: bool, fingerprint: str = "") -> str:
-    if baseline is None or baseline.get("dataset", fingerprint) != fingerprint:
+    # No fingerprint (a baseline from before it was recorded) is not comparable either.
+    if baseline is None or baseline.get("dataset") != fingerprint:
         return "NEW BASELINE"
     if average >= baseline["average"]:
         return "PASS"

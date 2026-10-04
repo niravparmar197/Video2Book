@@ -43,7 +43,7 @@ def test_first_run_becomes_the_baseline(eval_dir, monkeypatch):
 
 def test_a_drop_is_blocked_when_the_release_gate_is_on(eval_dir, monkeypatch):
     _write_dataset(eval_dir)
-    (eval_dir / "baseline.json").write_text(json.dumps({"average": 8.0, "date": "d"}), encoding="utf-8")
+    (eval_dir / "baseline.json").write_text(json.dumps({"average": 8.0, "date": "d", "dataset": "v0,v1"}), encoding="utf-8")
     _judge_scores(monkeypatch, 6)
     monkeypatch.setenv("EVAL_ON_RELEASE", "true")
 
@@ -53,7 +53,7 @@ def test_a_drop_is_blocked_when_the_release_gate_is_on(eval_dir, monkeypatch):
 
 def test_a_drop_only_warns_when_the_gate_is_off_and_a_pass_can_update_the_baseline(eval_dir, monkeypatch):
     _write_dataset(eval_dir)
-    (eval_dir / "baseline.json").write_text(json.dumps({"average": 7.0, "date": "d"}), encoding="utf-8")
+    (eval_dir / "baseline.json").write_text(json.dumps({"average": 7.0, "date": "d", "dataset": "v0,v1"}), encoding="utf-8")
     monkeypatch.setenv("EVAL_ON_RELEASE", "false")
 
     _judge_scores(monkeypatch, 6)
@@ -108,3 +108,14 @@ def test_a_changed_dataset_starts_a_new_baseline_instead_of_comparing(eval_dir, 
 
     baseline = json.loads((eval_dir / "baseline.json").read_text(encoding="utf-8"))
     assert baseline["average"] == 5 and baseline["dataset"] == "v0,v1,v2"
+
+
+def test_a_baseline_without_a_dataset_fingerprint_is_not_compared(eval_dir, monkeypatch):
+    _write_dataset(eval_dir, n=2)
+    (eval_dir / "baseline.json").write_text(json.dumps({"average": 3.0, "date": "d"}), encoding="utf-8")
+    _judge_scores(monkeypatch, 7)
+
+    assert eval_module.main([]) == 0
+
+    baseline = json.loads((eval_dir / "baseline.json").read_text(encoding="utf-8"))
+    assert baseline["average"] == 7 and baseline["dataset"] == "v0,v1"

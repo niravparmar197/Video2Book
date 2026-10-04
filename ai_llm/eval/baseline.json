@@ -1,12 +1,24 @@
 {
-  "average": 6.6,
-  "date": "2026-10-04T14:00:10+00:00",
-  "examples": 5,
+  "average": 7.33,
+  "date": "2026-10-04T16:19:35+00:00",
+  "examples": 15,
+  "dataset": "68BZ5f7P94E,CqOfi41LfDw,GAe5oB742dw,IHZwWFHWa-w,IN2XmBhILt4,aircAruvnKk,bMGoMu-CxMY,cF85flv-cZ0,eMlx5fFNoYc,mQM3V8E13yc,ogdgkeQJs6s,rkKZIMPecRA,s57648-bbOs,wjZofJX0v4M,zZGcasTtLfA",
   "scores": {
-    "mQM3V8E13yc": 8,
-    "ogdgkeQJs6s": 5,
-    "bMGoMu-CxMY": 6,
-    "cF85flv-cZ0": 6,
-    "68BZ5f7P94E": 8
-  }
+    "mQM3V8E13yc": 8.0,
+    "ogdgkeQJs6s": 8.5,
+    "bMGoMu-CxMY": 6.5,
+    "cF85flv-cZ0": 8.5,
+    "68BZ5f7P94E": 7.0,
+    "aircAruvnKk": 5.0,
+    "IHZwWFHWa-w": 4.5,
+    "wjZofJX0v4M": 8.5,
+    "eMlx5fFNoYc": 6.5,
+    "CqOfi41LfDw": 7.5,
+    "IN2XmBhILt4": 9.0,
+    "zZGcasTtLfA": 6.5,
+    "s57648-bbOs": 8.5,
+    "GAe5oB742dw": 7.5,
+    "rkKZIMPecRA": 8.0
+  },
+  "note": "15-example run of 2026-10-04 (2 judge calls per example)"
 }
