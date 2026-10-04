@@ -350,3 +350,173 @@ def test_run_frames_is_cache_skippable(tmp_path, monkeypatch):
     frames_node.run_frames("vid1", "https://youtube.com/watch?v=vid1", chunk, tmp_path)
 
     assert calls["n"] == 1
+
+
+def test_detect_scenes_downloaded_downloads_once_for_concurrent_chunks(tmp_path):
+    """VIDEO_MODE=download: chunks of one video run on a thread pool, but
+    the video must only be downloaded once, then each chunk scans the same
+    local copy for its own time range."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    downloads = []
+
+    def fake_download(url, path):
+        downloads.append(url)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"fake-mp4")
+        return Path(path)
+
+    scanned_inputs = []
+
+    def fake_runner(args, **kwargs):
+        scanned_inputs.append((args[args.index("-i") + 1], args[args.index("-ss") + 1]))
+        return _FakeCompletedProcess(returncode=0, stderr="")
+
+    def scan(start):
+        return frames_node.detect_scenes_downloaded(
+            "vidX", "https://youtube.com/watch?v=vidX", start, start + 60,
+            tmp_path, tmp_path / f"scenes_{int(start)}",
+            download_video=fake_download, runner=fake_runner,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(scan, [0.0, 60.0, 120.0, 180.0]))
+
+    assert downloads == ["https://youtube.com/watch?v=vidX"]
+    local = str(frames_node.local_video_path("vidX", tmp_path))
+    assert sorted(scanned_inputs) == [(local, "0.0"), (local, "120.0"), (local, "180.0"), (local, "60.0")]
+
+
+def test_detect_scenes_downloaded_falls_back_to_stream_when_download_fails(tmp_path, monkeypatch):
+    def failing_download(url, path):
+        raise RuntimeError("network down")
+
+    stream_calls = []
+
+    def fake_stream(url, start, end, scene_dir, **kw):
+        stream_calls.append((url, start, end))
+        return [{"path": Path("x.jpg"), "timestamp_seconds": start}]
+
+    monkeypatch.setattr(frames_node, "detect_scenes_with_fallback", fake_stream)
+
+    result = frames_node.detect_scenes_downloaded(
+        "vidY", "https://youtube.com/watch?v=vidY", 0.0, 60.0,
+        tmp_path, tmp_path / "scenes", download_video=failing_download,
+    )
+
+    assert stream_calls == [("https://youtube.com/watch?v=vidY", 0.0, 60.0)]
+    assert result[0]["timestamp_seconds"] == 0.0
+
+
+def test_run_frames_uses_download_mode_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEO_MODE", "download")
+    chunk = {"chunk_index": 0, "start_seconds": 0.0, "end_seconds": 60.0}
+    calls = []
+
+    def fake_downloaded(video_id, video_url, start, end, output_dir, scene_dir, **kw):
+        calls.append(video_id)
+        Path(scene_dir).mkdir(parents=True, exist_ok=True)
+        p = Path(scene_dir) / "scene_0001.jpg"
+        _make_image(p, fill=(10, 20, 30), shape=(1, 1, 10, 10))
+        return [{"path": p, "timestamp_seconds": 5.0}]
+
+    def must_not_stream(*a, **kw):
+        raise AssertionError("stream mode must not run when VIDEO_MODE=download")
+
+    monkeypatch.setattr(frames_node, "detect_scenes_downloaded", fake_downloaded)
+    monkeypatch.setattr(frames_node, "detect_scenes_with_fallback", must_not_stream)
+
+    frames_node.run_frames("vid1", "https://youtube.com/watch?v=vid1", chunk, tmp_path)
+
+    assert calls == ["vid1"]
+
+
+@pytest.mark.parametrize(
+    "video_mode, duration_seconds, expected",
+    [
+        ("stream", 300, True),  # a 5-minute video: a temporary download is small and ~8x faster
+        ("stream", 13 * 3600, True),  # a 13-hour video downloads too (~0.7GB at 480p)
+        ("stream", 15 * 3600, True),  # right at the 900-minute limit
+        ("stream", 15 * 3600 + 1, False),  # beyond it keeps streaming (no multi-GB downloads)
+        ("stream", None, False),  # unknown duration -> stream
+        ("download", 30 * 3600, True),  # explicit download mode always downloads
+    ],
+)
+def test_should_download_short_videos_even_in_stream_mode(
+    monkeypatch, video_mode, duration_seconds, expected
+):
+    monkeypatch.setenv("VIDEO_MODE", video_mode)
+    monkeypatch.delenv("FRAMES_DOWNLOAD_MAX_MINUTES", raising=False)
+
+    assert frames_node._should_download(duration_seconds) is expected
+
+
+def test_should_download_can_be_disabled_with_zero_minutes(monkeypatch):
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+    monkeypatch.setenv("FRAMES_DOWNLOAD_MAX_MINUTES", "0")
+
+    assert frames_node._should_download(60) is False
+
+
+def test_should_download_streams_instead_when_the_disk_is_too_small(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+    monkeypatch.delenv("FRAMES_DOWNLOAD_MAX_MINUTES", raising=False)
+    fake_usage = type("Usage", (), {"free": 5e9})  # 5GB free
+    monkeypatch.setattr(frames_node.shutil, "disk_usage", lambda path: fake_usage)
+
+    # 13h needs ~11.7GB free (0.3GB/h x 3); 1h needs max(1, 0.9) = 1GB.
+    assert frames_node._should_download(13 * 3600, tmp_path / "book") is False
+    assert frames_node._should_download(3600, tmp_path / "book") is True
+
+
+def test_limit_frames_keeps_an_even_spread_including_first_and_last():
+    frames = [{"path": f"f{i}", "timestamp_seconds": i} for i in range(153)]
+
+    kept = frames_node.limit_frames(frames, 12)
+
+    assert len(kept) == 12
+    assert kept[0] == frames[0] and kept[-1] == frames[-1]
+    stamps = [frame["timestamp_seconds"] for frame in kept]
+    assert stamps == sorted(set(stamps))  # in order, no repeats
+    assert max(b - a for a, b in zip(stamps, stamps[1:])) <= 15  # spread across the chunk
+
+
+def test_limit_frames_leaves_short_lists_and_zero_limit_alone():
+    frames = [{"path": f"f{i}", "timestamp_seconds": i} for i in range(5)]
+
+    assert frames_node.limit_frames(frames, 12) == frames
+    assert frames_node.limit_frames(frames * 40, 0) == frames * 40
+    assert frames_node.limit_frames(frames, 1) == [frames[0]]
+
+
+def test_loading_screenshots_applies_the_per_chunk_cap_to_already_saved_frames(tmp_path, monkeypatch):
+    # A book whose frames were saved before the cap existed (153 in one chunk)
+    # must still render with the cap when it is retried/resumed.
+    monkeypatch.setenv("MAX_SCREENSHOTS_PER_CHUNK", "12")
+    frames_dir = tmp_path / "work" / "frames"
+    frames_dir.mkdir(parents=True)
+    saved = [{"asset_path": f"a{i}.jpg", "timestamp_seconds": i} for i in range(153)]
+    (frames_dir / "vid1_000.json").write_text(
+        json.dumps({"video_id": "vid1", "chunk_index": 0, "frames": saved}), encoding="utf-8"
+    )
+
+    by_video = frames_node.load_video_screenshots("vid1", tmp_path)
+    by_source = frames_node.load_screenshots_for_sources(
+        [{"video_id": "vid1", "chunk_index": 0}], tmp_path
+    )
+
+    assert len(by_video) == len(by_source) == 12
+
+
+def test_detect_scenes_decodes_keyframes_only(tmp_path):
+    captured = {}
+
+    def fake_runner(args, **kwargs):
+        captured["args"] = args
+        return _FakeCompletedProcess(0, stderr="")
+
+    frames_node.detect_scenes("https://stream", 0, 60, tmp_path, runner=fake_runner)
+
+    args = captured["args"]
+    assert args[args.index("-skip_frame") + 1] == "nokey"
+    assert args.index("-skip_frame") < args.index("-i")  # an input option, before -i

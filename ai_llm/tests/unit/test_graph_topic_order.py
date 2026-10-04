@@ -89,9 +89,8 @@ def test_run_book_topic_order_merges_overlapping_topic_into_one_chapter(tmp_path
     main_tex = (output_dir / "chapters" / "main.tex").read_text(encoding="utf-8")
     input_lines = [line for line in main_tex.splitlines() if line.strip().startswith(r"\input{")]
     # ONE chapter for the merged topic, not one per video — the whole point
-    # of BOOK_ORDER=topic. (book_pass, sprints/v6, always adds a topic
-    # index once it runs; the empty conftest stub means no glossary here.)
-    assert input_lines == [r"\input{gradient-descent}", r"\input{topic_index}"]
+    # of BOOK_ORDER=topic. (The empty conftest stub means no glossary here.)
+    assert input_lines == [r"\input{gradient-descent}"]
 
 
 def test_run_book_topic_order_raises_over_max_book_hours_without_force(tmp_path, monkeypatch):
@@ -162,7 +161,7 @@ def test_run_book_topic_order_video_mode_stream_calls_run_frames_per_chunk(tmp_p
 
     frames_calls = []
 
-    def fake_run_frames(video_id, video_url, chunk, out_dir):
+    def fake_run_frames(video_id, video_url, chunk, out_dir, **kwargs):
         frames_calls.append((video_id, chunk["chunk_index"]))
         frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
         frames_path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +217,7 @@ def test_run_book_topic_order_runs_frames_and_topics_concurrently(tmp_path, monk
     start_times: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    def fake_run_frames(video_id, video_url, chunk, out_dir):
+    def fake_run_frames(video_id, video_url, chunk, out_dir, **kwargs):
         start_times.setdefault("frames", time.perf_counter() - t0)
         time.sleep(0.3)
         frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
@@ -364,8 +363,27 @@ def test_run_book_topic_order_wires_real_glossary_and_indexes(tmp_path, monkeypa
     main_tex = (output_dir / "chapters" / "main.tex").read_text(encoding="utf-8")
     assert r"\input{glossary}" in main_tex
     assert r"\printindex" in main_tex
-    assert r"\input{topic_index}" in main_tex
-    assert "Preface" in main_tex
+    # Topic notes, not a formal book: no preface or topic-index filler pages.
+    assert r"\input{topic_index}" not in main_tex
+    assert "Preface" not in main_tex
 
     glossary_tex = (output_dir / "chapters" / "glossary.tex").read_text(encoding="utf-8")
     assert "Gradient Descent" in glossary_tex
+
+
+def test_plan_node_does_not_rerun_when_plan_already_exists(tmp_path, monkeypatch):
+    """The render phase re-runs the graph from START; the plan LLM call
+    must be cache-skipped there, or it could produce a different plan than
+    the outline the user already reviewed."""
+    from app.nodes.plan import plan_json_path
+
+    plan_path = plan_json_path(tmp_path)
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text("[]", encoding="utf-8")
+
+    def must_not_run(output_dir):
+        raise AssertionError("plan must be cache-skipped when plan.json exists")
+
+    monkeypatch.setattr(graph_module, "run_plan_topics", must_not_run)
+
+    graph_module._plan_node({"output_dir": str(tmp_path)})

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, HttpUrl
 
@@ -14,6 +15,9 @@ class UserCreateResponse(BaseModel):
 
 class BookCreateRequest(BaseModel):
     url: HttpUrl
+    # The kind of book: "auto" lets the pipeline decide from the video;
+    # lecture -> Study Notes, podcast -> Podcast Notes, comedy -> Comedy Recap.
+    genre: Literal["auto", "lecture", "podcast", "comedy"] = "auto"
 
 
 class VideoOut(BaseModel):

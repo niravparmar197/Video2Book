@@ -233,3 +233,54 @@ def test_create_book_no_alert_while_under_daily_spend_threshold(
         assert resp.status_code == 201
 
     assert calls == []
+
+
+def test_create_book_returns_422_with_youtubes_reason_for_a_members_only_video(
+    client, db_session, auth_headers, monkeypatch
+):
+    def blocked(url, chunk_minutes=None):
+        raise books_module.VideoUnavailableError("This video is available to this channel's members")
+
+    monkeypatch.setattr(books_module, "ai_llm_estimate_playlist", blocked)
+
+    resp = client.post(
+        "/books/youtube", json={"url": "https://www.youtube.com/watch?v=WZjSFNPS9Lo"}, headers=auth_headers
+    )
+
+    assert resp.status_code == 422
+    assert "channel's members" in resp.json()["detail"]
+    assert db_session.query(Book).count() == 0  # nothing queued or persisted
+
+
+def test_create_book_saves_a_chosen_book_type_before_planning(
+    client, db_session, auth_headers, monkeypatch, tmp_path
+):
+    import dataclasses
+
+    from api.ai_llm_bridge import load_genre
+
+    monkeypatch.setattr(books_module, "settings", dataclasses.replace(books_module.settings, output_root=str(tmp_path)))
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_estimate_playlist",
+        lambda url, chunk_minutes=None: [SimpleNamespace(duration_seconds=600, estimated_cost_usd=0.0)],
+    )
+
+    resp = client.post(
+        "/books/youtube",
+        json={"url": "https://www.youtube.com/watch?v=pod1", "genre": "podcast"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 201
+    assert load_genre(tmp_path / resp.json()["id"]) == "podcast"
+
+
+def test_create_book_rejects_an_unknown_book_type(client, auth_headers):
+    resp = client.post(
+        "/books/youtube",
+        json={"url": "https://www.youtube.com/watch?v=x", "genre": "documentary"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422

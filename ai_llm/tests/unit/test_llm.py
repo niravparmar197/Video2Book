@@ -119,14 +119,15 @@ def test_call_writer_retries_after_a_transient_double_failure(monkeypatch):
 
 
 def test_build_client_gives_nvidia_a_generous_token_budget_and_timeout():
-    """Regression guard: nemotron-3-super is a reasoning model that can spend
-    thousands of tokens thinking before its final answer on a full chunk
-    transcript. A low completion cap or short timeout truncates mid-thought
-    and yields unparseable output — verified against the real API while
-    building Task 8. See app/llm.py's MAX_OUTPUT_TOKENS/REQUEST_TIMEOUT_SECONDS
-    comment for the full story.
+    """Regression guard: a reasoning model can spend thousands of tokens
+    thinking before its final answer on a full chunk transcript. A low
+    completion cap or short timeout truncates mid-thought and yields
+    unparseable output — verified against the real API while building
+    Task 8. See app/llm.py's MAX_OUTPUT_TOKENS/REQUEST_TIMEOUT_SECONDS
+    comment for the full story. This must hold regardless of which NVIDIA
+    model WRITER_MODELS currently points at.
     """
-    client = _build_client("nvidia", api_key="test-key", model="nvidia/nemotron-3-super-120b-a12b")
+    client = _build_client("nvidia", api_key="test-key", model="openai/gpt-oss-20b")
     assert client.max_tokens == MAX_OUTPUT_TOKENS
     assert client._client.timeout == REQUEST_TIMEOUT_SECONDS
 
@@ -148,6 +149,72 @@ def test_call_writer_extracts_string_content_directly():
         client_factory=lambda provider, settings: FakeStringClient(),
     )
     assert result == "plain string response"
+
+
+def test_call_writer_extracts_text_from_list_of_content_blocks():
+    """Verified against a real compiled book: Gemini returned a
+    multi-part response (content as a list of blocks with a "signature"
+    extras field riding along a "text" block) instead of a plain string,
+    and the old str(content) fallback dumped the raw Python repr of that
+    whole structure -- signature blob included -- into the book as if it
+    were the LLM's actual answer.
+    """
+
+    class FakeMultiPartClient:
+        def invoke(self, prompt):
+            return FakeResponse(
+                [
+                    {
+                        "type": "text",
+                        "text": "## Topic\n\nReal notes here.",
+                        "extras": {"signature": "Er0ZCroZAWkU" + "x" * 500},
+                    }
+                ]
+            )
+
+    result = call_writer(
+        "hello",
+        settings=TEST_SETTINGS,
+        client_factory=lambda provider, settings: FakeMultiPartClient(),
+    )
+    assert result == "## Topic\n\nReal notes here."
+    assert "signature" not in result
+
+
+def test_call_writer_joins_multiple_text_blocks_and_ignores_non_text_blocks():
+    class FakeMultiBlockClient:
+        def invoke(self, prompt):
+            return FakeResponse(
+                [
+                    {"type": "text", "text": "first "},
+                    {"type": "thought_signature", "signature": "abc123"},
+                    {"type": "text", "text": "second"},
+                ]
+            )
+
+    result = call_writer(
+        "hello",
+        settings=TEST_SETTINGS,
+        client_factory=lambda provider, settings: FakeMultiBlockClient(),
+    )
+    assert result == "first second"
+
+
+def test_call_writer_falls_back_to_repr_for_an_unrecognized_content_shape():
+    """A content shape with no string/text-block anywhere is a genuinely
+    unexpected case this can't recover text from -- str() is a last
+    resort, not silently empty output."""
+
+    class FakeOddClient:
+        def invoke(self, prompt):
+            return FakeResponse([{"type": "unknown", "data": 123}])
+
+    result = call_writer(
+        "hello",
+        settings=TEST_SETTINGS,
+        client_factory=lambda provider, settings: FakeOddClient(),
+    )
+    assert result == "[{'type': 'unknown', 'data': 123}]"
 
 
 class _FakeClock:

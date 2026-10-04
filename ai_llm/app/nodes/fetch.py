@@ -46,12 +46,59 @@ def run_fetch_playlist(
     captions_dir = Path(captions_dir) if captions_dir else output_dir / "work" / "captions"
 
     entries = list_playlist_videos(url)
+    already_fetched = _load_fetched_videos(output_dir, captions_dir)
     videos = [
-        replace(fetch_video(entry.url, captions_dir), playlist_index=entry.playlist_index)
+        replace(
+            already_fetched.get(entry.video_id) or fetch_video(entry.url, captions_dir),
+            playlist_index=entry.playlist_index,
+        )
         for entry in entries
     ]
     _write_videos_json(output_dir, videos)
     return videos
+
+
+def _load_fetched_videos(output_dir: Path, captions_dir: Path) -> dict[str, VideoInfo]:
+    """Videos already fetched for this book (videos.json + their captions on
+    disk), keyed by video id.
+
+    The backend runs the graph twice (plan, then render), and --resume runs
+    it again: without this every pass re-downloaded the captions (4-30s each,
+    and a fresh chance of YouTube's HTTP 429 rate limit) or even re-ran Whisper
+    for a video whose transcript was already sitting on disk.
+    """
+    videos_json_path = output_dir / "videos.json"
+    if not videos_json_path.exists():
+        return {}
+    try:
+        records = json.loads(videos_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    fetched: dict[str, VideoInfo] = {}
+    for record in records:
+        # videos.json may hold a path relative to another cwd; fall back to
+        # the standard captions location.
+        captions_path = next(
+            (
+                candidate
+                for candidate in (Path(record["captions_path"]), captions_dir / f"{record['video_id']}.en.vtt")
+                if candidate.exists()
+            ),
+            None,
+        )
+        if captions_path is not None:
+            fetched[record["video_id"]] = VideoInfo(
+                video_id=record["video_id"],
+                title=record["title"],
+                duration_seconds=record["duration_seconds"],
+                url=record["url"],
+                captions_path=str(captions_path),
+                playlist_index=record.get("playlist_index", 0),
+                channel=record.get("channel", ""),
+                chapters=tuple(record.get("chapters") or ()),
+            )
+    return fetched
 
 
 def _write_videos_json(output_dir: Path, videos: list[VideoInfo]) -> None:
@@ -60,6 +107,8 @@ def _write_videos_json(output_dir: Path, videos: list[VideoInfo]) -> None:
             "video_id": video.video_id,
             "title": video.title,
             "duration_seconds": video.duration_seconds,
+            "channel": video.channel,
+            "chapters": list(video.chapters),
             "url": video.url,
             "captions_path": video.captions_path,
             "playlist_index": video.playlist_index,

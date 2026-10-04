@@ -25,7 +25,7 @@ Video2Book/
 
 | Area | Decision | Why |
 |---|---|---|
-| Video input | Stream mode by default, no video file saved; download only as a fallback | A 30h video would need 15-45GB to store |
+| Video input | Stream mode by default, no video file saved; download only as a fallback — except videos ≤ `FRAMES_DOWNLOAD_MAX_MINUTES` (900 = 15h, so a ~13h video qualifies), downloaded temporarily at 480p for the screenshot scan and deleted when the disk has room (streaming is ~8x slower) | A 30h video would need 15-45GB to store |
 | Screenshots | One per scene change, not on a timer | A timer gives ~720 near-duplicate images/hour |
 | Transcript | YouTube captions first, then Whisper on audio only | Captions are free and instant |
 | Long videos | Everything runs in 30-minute chunks | One design works for 10 minutes and 30 hours |
@@ -41,7 +41,7 @@ Video2Book/
 
 ## LLM provider chain
 
-- **Primary — NVIDIA NIM**: `nvidia/nemotron-3-super-120b-a12b` for writing/judging, `nvidia/nemotron-3-nano-omni` for vision. Free, 40 RPM, no published daily cap.
+- **Primary — NVIDIA NIM**: `openai/gpt-oss-20b` for writing/judging (replaces `nvidia/nemotron-3-super-120b-a12b`, which reached end of life 2026-10-03), `nvidia/nemotron-3-nano-omni` for vision. Free, 40 RPM, no published daily cap.
 - **Fallback — Google Gemini**: `gemini-3.8-flash` for the same jobs. Free, ~10 RPM, daily cap resets midnight Pacific.
 - Any primary error (rate limit, timeout, 5xx) retries the same request on the fallback, independently per call type (writer / judge / vision). If both fail, retry with backoff, then mark the step failed and let `--resume` pick it up.
 - Claude is **not** a runtime option right now — no API key is available. `LLM_PROVIDER` / `LLM_FALLBACK_PROVIDER` can point at `claude` later if a key is added. Claude Code is used only to write this app's own code, never called from inside the app.

@@ -34,6 +34,16 @@ run_plan = _graph.run_plan
 resume_book = _graph.resume_book
 get_progress = _graph.get_progress
 get_chapter_progress = _graph.get_chapter_progress
+get_warnings = _graph.get_warnings
+get_timings = _graph.get_timings
+
+_genre = _import("app.nodes.genre")
+save_genre = _genre.save_genre
+load_genre = _genre.load_genre
+decided_book_kind = _genre.decided_book_kind
+
+_youtube = _import("app.youtube")
+VideoUnavailableError = _youtube.VideoUnavailableError
 
 _estimate = _import("app.estimate")
 _config = _import("app.config")

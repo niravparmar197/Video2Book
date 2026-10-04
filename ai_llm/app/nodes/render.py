@@ -10,6 +10,7 @@ only renders what it's given.
 """
 from __future__ import annotations
 
+import re
 import subprocess  # nosec B404 - only ever called with a fixed arg list, never shell=True
 from pathlib import Path
 from typing import Callable
@@ -28,13 +29,24 @@ def render_table(data: dict) -> str:
     """Turn {"headers": [...], "rows": [[...], ...]} into an escaped LaTeX
     tabular block, styled with booktabs rules (toprule/midrule/bottomrule)
     rather than plain \\hline -- the open, ruled-line look professionally
-    typeset tables use, instead of a boxed-in grid.
+    typeset tables use, instead of a boxed-in grid -- plus a light tinted
+    header row (requires \\usepackage[table]{{xcolor}} in main.tex.j2) so a
+    table doesn't read as plain black-and-white against the rest of the
+    book's color.
+
+    tabularx at full line width, with every column after the first set to
+    wrap (ragged-right X columns): a plain `l` column never wraps, so a
+    long cell ran straight off the right edge of the page (verified in a
+    real compiled book). The first column stays `l` -- it's a short label.
     """
     headers = [str(header) for header in data.get("headers", [])]
     rows = [[str(cell) for cell in row] for row in data.get("rows", [])]
 
-    column_spec = "l" * max(len(headers), 1)
-    lines = [f"\\begin{{tabular}}{{{column_spec}}}", "\\toprule"]
+    wrap = r">{\raggedright\arraybackslash}X"
+    column_count = max(len(headers), 1)
+    column_spec = wrap if column_count == 1 else "l" + wrap * (column_count - 1)
+    lines = [f"\\begin{{tabularx}}{{\\linewidth}}{{{column_spec}}}", "\\toprule"]
+    lines.append("\\rowcolor{V2BPrimary!12}")
     lines.append(
         " & ".join(f"\\textbf{{{escape_latex(header)}}}" for header in headers) + r" \\"
     )
@@ -42,8 +54,14 @@ def render_table(data: dict) -> str:
     for row in rows:
         lines.append(" & ".join(escape_latex(cell) for cell in row) + r" \\")
     lines.append("\\bottomrule")
-    lines.append("\\end{tabular}")
+    lines.append("\\end{tabularx}")
     return "\n".join(lines)
+
+
+# Typographic hyphens/dashes (non-breaking hyphen U+2011 is common in model
+# output) make "Low-Level" and "Low‑Level" two different nodes and crashed dot's
+# Windows code-page input; fold them to a plain hyphen.
+_DASHES_RE = re.compile(r"[\u2010-\u2015\u2212]")
 
 
 def _dot_escape(text: str) -> str:
@@ -55,18 +73,56 @@ def render_diagram(
     output_path: str | Path,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> Path:
-    """Turn {"nodes": [...], "edges": [[from, to], ...]} into a PNG via Graphviz `dot`."""
+    """Turn {"nodes": [...], "edges": [[from, to] or [from, to, label], ...]}
+    into a PNG via Graphviz `dot`, styled in the book's palette (filled
+    rounded boxes, gold arrows) rather than Graphviz's bare black outlines,
+    so a diagram reads as part of the book. An optional third edge element
+    labels the arrow (e.g. "commit" / "rollback").
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    nodes = [str(node) for node in data.get("nodes", [])]
-    edges = [(str(pair[0]), str(pair[1])) for pair in data.get("edges", [])]
+    nodes = [_DASHES_RE.sub("-", str(node)).strip() for node in data.get("nodes", [])]
+    by_key = {node.lower(): node for node in nodes}
 
-    dot_lines = ["digraph G {"]
+    def canonical(name: object) -> str:
+        # "commit" vs "Commit" must be one box, not two near-duplicates.
+        text = _DASHES_RE.sub("-", str(name)).strip()
+        return by_key.get(text.lower(), text)
+
+    def clean_label(label: object) -> str:
+        # A label of only arrows/dashes ("-->", "—>") is noise, not a label.
+        text = _DASHES_RE.sub("-", str(label)).strip()
+        return text if re.search(r"\w", text) else ""
+
+    edges = [
+        (canonical(edge[0]), canonical(edge[1]), clean_label(edge[2]) if len(edge) > 2 else "")
+        for edge in data.get("edges", [])
+        if len(edge) >= 2
+    ]
+    if edges:
+        # A box nothing connects to floats loose and breaks the flow (seen
+        # in a real book: "Success"/"Failure" listed as nodes but only used
+        # as arrow labels). Keep isolated nodes only for an edge-less list.
+        connected = {source for source, _, _ in edges} | {target for _, target, _ in edges}
+        nodes = [node for node in nodes if node in connected]
+
+    # A left-to-right chain of more than ~4 boxes gets scaled down to
+    # unreadable text at page width; longer flows run top-to-bottom instead.
+    rankdir = "LR" if len(nodes) <= 4 else "TB"
+    dot_lines = [
+        "digraph G {",
+        f'  graph [rankdir={rankdir}, bgcolor="white", pad="0.3", nodesep="0.5", ranksep="0.7", dpi=200];',
+        '  node [shape=box, style="rounded,filled", fillcolor="#E8EEF7", color="#1F3864",'
+        ' penwidth=1.5, fontname="Helvetica", fontsize=13, fontcolor="#1F3864", margin="0.25,0.12"];',
+        '  edge [color="#C9A24B", penwidth=1.8, arrowsize=0.9, fontname="Helvetica",'
+        ' fontsize=11, fontcolor="#1B6E6E"];',
+    ]
     for node in nodes:
         dot_lines.append(f'  "{_dot_escape(node)}";')
-    for source, target in edges:
-        dot_lines.append(f'  "{_dot_escape(source)}" -> "{_dot_escape(target)}";')
+    for source, target, label in edges:
+        attrs = f' [label="{_dot_escape(label)}"]' if label else ""
+        dot_lines.append(f'  "{_dot_escape(source)}" -> "{_dot_escape(target)}"{attrs};')
     dot_lines.append("}")
     dot_source = "\n".join(dot_lines)
 
@@ -75,6 +131,7 @@ def render_diagram(
         input=dot_source,
         capture_output=True,
         text=True,
+        encoding="utf-8",  # not the locale code page (cp1252 on Windows)
         timeout=DOT_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
@@ -96,11 +153,16 @@ def render_chart(data: dict, output_path: str | Path) -> Path:
     values = [float(value) for value in data.get("values", [])]
     title = str(data.get("title", ""))
 
+    palette = ["#1F3864", "#C9A24B", "#1B6E6E", "#7A9CC6", "#D9B86C", "#5FA3A3"]
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(categories, values)
+    bars = ax.bar(categories, values, color=[palette[i % len(palette)] for i in range(len(values))])
+    ax.bar_label(bars, padding=3, fontsize=9, color="#333333")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(axis="y", alpha=0.25)
+    ax.set_axisbelow(True)
     if title:
-        ax.set_title(title)
+        ax.set_title(title, color="#1F3864", fontweight="bold")
     fig.tight_layout()
-    fig.savefig(output_path)
+    fig.savefig(output_path, dpi=200)
     plt.close(fig)
     return output_path

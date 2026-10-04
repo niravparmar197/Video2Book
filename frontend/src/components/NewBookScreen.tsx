@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { createBook, ApiError } from '../lib/api';
+import { createBook, ApiError, type BookGenre } from '../lib/api';
 import { addTrackedBookId } from '../lib/myBooks';
 import { StateMessage } from './StateMessage';
 
@@ -9,6 +9,7 @@ interface NewBookScreenProps {
 
 export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) => {
   const [url, setUrl] = useState('');
+  const [genre, setGenre] = useState<BookGenre>('auto');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -17,7 +18,7 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
     setError(null);
     setIsSubmitting(true);
     try {
-      const book = await createBook(url.trim());
+      const book = await createBook(url.trim(), genre);
       addTrackedBookId(book.id);
       onBookCreated(book.id);
     } catch (err) {
@@ -47,6 +48,20 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
           onChange={(e) => setUrl(e.target.value)}
           className="w-full px-3 py-2.5 bg-white border border-[#c1c8c3] rounded-lg text-body-md text-primary focus:outline-none focus:border-[#006c49]"
         />
+        <label className="flex flex-col gap-1 font-body-sm text-body-sm text-on-surface-variant">
+          Book type
+          <select
+            data-testid="new-book-genre-select"
+            value={genre}
+            onChange={(e) => setGenre(e.target.value as BookGenre)}
+            className="w-full px-3 py-2.5 bg-white border border-[#c1c8c3] rounded-lg text-body-md text-primary focus:outline-none focus:border-[#006c49]"
+          >
+            <option value="auto">Auto-detect from the video</option>
+            <option value="lecture">Study notes (lesson, tutorial, course)</option>
+            <option value="podcast">Podcast notes (interview, conversation)</option>
+            <option value="comedy">Comedy recap (stand-up, comedy show)</option>
+          </select>
+        </label>
         <button
           data-testid="new-book-submit"
           type="submit"

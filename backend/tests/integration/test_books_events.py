@@ -52,6 +52,41 @@ def test_events_streams_a_terminal_event_for_a_done_book(client, db_session, use
     assert any(line == "event: done" for line in lines)
 
 
+def test_events_terminal_done_event_includes_ai_llm_warnings(
+    client, db_session, user, auth_headers, monkeypatch
+):
+    """sprints/v11: non-fatal degradations ai_llm logged during the run
+    (e.g. a chunk's topics extraction giving up on a malformed LLM
+    response) must reach the frontend even for a book that still finished
+    successfully, not just get lost in worker stdout."""
+    book = Book(
+        url="https://www.youtube.com/watch?v=abc123",
+        status="done",
+        pdf_path="placeholder/book.pdf",
+        user_id=user.id,
+    )
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    fake_warnings = [
+        {
+            "ts": "2026-09-25T12:00:00+00:00",
+            "logger": "app.nodes.topics",
+            "message": "topics extraction for vid1 chunk 0 produced no usable JSON array "
+            "after a retry; continuing with an empty topics list",
+        }
+    ]
+    monkeypatch.setattr(books_module, "ai_llm_get_warnings", lambda output_dir: fake_warnings)
+
+    with client.stream("GET", f"/books/{book.id}/events", headers=auth_headers) as resp:
+        lines = [line for line in resp.iter_lines() if line]
+
+    events = _parse_sse(lines)
+    assert events[-1][0] == "done"
+    assert events[-1][1]["warnings"] == fake_warnings
+
+
 def test_events_streams_a_terminal_event_for_a_failed_book(client, db_session, user, auth_headers):
     book = Book(
         url="https://www.youtube.com/watch?v=abc123",
@@ -155,3 +190,105 @@ def test_events_includes_chapters_and_a_chapter_change_produces_a_new_event(
     assert progress_events[1]["chapters"][0]["score"] == 9
     assert progress_events[1]["chapters"][0]["attempts"] == 1
     assert events[-1][0] == "done"
+
+
+def test_events_a_new_warning_with_no_other_change_still_produces_a_new_event(
+    client, db_session, user, auth_headers, monkeypatch
+):
+    """A warning appearing mid-node (same current_node, same chapters)
+    must not be silently swallowed by the dedup key until something else
+    happens to change."""
+    book = Book(url="https://www.youtube.com/watch?v=abc123", status="rendering", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    monkeypatch.setattr(
+        books_module, "settings", dataclasses.replace(real_settings, events_poll_seconds=0.01)
+    )
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_get_progress",
+        lambda output_dir, checkpointer, book_order, phase: {
+            "completed_nodes": ["fetch", "chunk", "topics"],
+            "current_node": "write",
+            "next_nodes": ["outline"],
+            "step": 3,
+        },
+    )
+    monkeypatch.setattr(books_module, "ai_llm_get_chapter_progress", lambda output_dir: [])
+
+    calls = {"n": 0}
+
+    def fake_get_warnings(output_dir):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            session = SessionLocal()
+            try:
+                row = session.get(Book, book.id)
+                row.status = "done"
+                session.commit()
+            finally:
+                session.close()
+            return [{"ts": "t", "logger": "app.nodes.plan", "message": "degraded"}]
+        return []
+
+    monkeypatch.setattr(books_module, "ai_llm_get_warnings", fake_get_warnings)
+
+    with client.stream("GET", f"/books/{book.id}/events", headers=auth_headers) as resp:
+        lines = [line for line in resp.iter_lines() if line]
+
+    events = _parse_sse(lines)
+    progress_events = [data for event, data in events if event == "progress"]
+
+    assert len(progress_events) == 2
+    assert progress_events[0]["warnings"] == []
+    assert progress_events[1]["warnings"][0]["message"] == "degraded"
+
+
+def test_events_progress_includes_the_book_type_and_seconds_per_step(
+    client, db_session, user, auth_headers, monkeypatch
+):
+    book = Book(url="https://www.youtube.com/watch?v=pod1", status="rendering", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    monkeypatch.setattr(
+        books_module, "settings", dataclasses.replace(real_settings, events_poll_seconds=0.01)
+    )
+    monkeypatch.setattr(
+        books_module,
+        "ai_llm_get_progress",
+        lambda output_dir, checkpointer, book_order, phase: {
+            "completed_nodes": ["fetch"],
+            "current_node": "write",
+            "next_nodes": ["write"],
+            "step": 3,
+        },
+    )
+    monkeypatch.setattr(books_module, "ai_llm_get_chapter_progress", lambda output_dir: [])
+    monkeypatch.setattr(books_module, "ai_llm_decided_book_kind", lambda output_dir: "Podcast Notes")
+    monkeypatch.setattr(books_module, "ai_llm_get_timings", lambda output_dir: {"fetch": 4.2})
+
+    calls = {"n": 0}
+
+    def fake_get_warnings(output_dir):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # end the stream after the first progress event
+            session = SessionLocal()
+            try:
+                session.get(Book, book.id).status = "done"
+                session.commit()
+            finally:
+                session.close()
+        return []
+
+    monkeypatch.setattr(books_module, "ai_llm_get_warnings", fake_get_warnings)
+
+    with client.stream("GET", f"/books/{book.id}/events", headers=auth_headers) as resp:
+        lines = [line for line in resp.iter_lines() if line]
+
+    progress = [data for event, data in _parse_sse(lines) if event == "progress"][0]
+    assert progress["book_kind"] == "Podcast Notes"
+    assert progress["step_seconds"] == {"fetch": 4.2}

@@ -38,9 +38,21 @@ def _timestamp_to_seconds(h: str, m: str, s: str, ms: str) -> float:
 
 
 def parse_vtt(vtt_text: str) -> list[Cue]:
-    """Parse a WebVTT captions file into an ordered list of cues."""
+    """Parse a WebVTT captions file into an ordered list of cues, one per
+    caption *line*, with a line that repeats the line just before it dropped.
+
+    YouTube's auto-captions are "rolling": every cue repeats the previous
+    line above the new one ("matter well since you ask" / "matter well since
+    you ask" + "I'd say no or ..."). Comparing whole cues let those repeats
+    through, so every auto-captioned transcript reached the LLM with each
+    phrase three times -- ~3x the tokens on every call (slower, and it
+    confused both the writer and the judge). Compared line by line, each
+    phrase appears once. A line holding only a space is part of a cue (not
+    its end), so it no longer hides the text line after it.
+    """
     cues: list[Cue] = []
     lines = vtt_text.splitlines()
+    previous_text = None
     i = 0
     while i < len(lines):
         match = _TIMESTAMP_RE.search(lines[i])
@@ -49,16 +61,19 @@ def parse_vtt(vtt_text: str) -> list[Cue]:
             start = _timestamp_to_seconds(*groups[0:4])
             end = _timestamp_to_seconds(*groups[4:8])
             i += 1
-            text_lines = []
-            while i < len(lines) and lines[i].strip():
-                text_lines.append(_TAG_RE.sub("", lines[i]).strip())
+            while i < len(lines) and lines[i] != "" and not _TIMESTAMP_RE.search(lines[i]):
+                text = _TAG_RE.sub("", lines[i]).strip()
+                if text and text != previous_text:
+                    cues.append(Cue(start_seconds=start, end_seconds=end, text=text))
+                    previous_text = text
                 i += 1
-            text = " ".join(t for t in text_lines if t)
-            if text:
-                cues.append(Cue(start_seconds=start, end_seconds=end, text=text))
         else:
             i += 1
     return cues
+
+
+# A final chunk shorter than this share of CHUNK_MINUTES is merged into the one before.
+_TAIL_MERGE_FRACTION = 0.2
 
 
 def chunk_cues(cues: list[Cue], chunk_minutes: int) -> list[Chunk]:
@@ -72,8 +87,19 @@ def chunk_cues(cues: list[Cue], chunk_minutes: int) -> list[Chunk]:
         index = int(cue.start_seconds // chunk_seconds)
         buckets.setdefault(index, []).append(cue)
 
+    # A short tail (a 30-minute video that runs 30:40) is folded into the
+    # previous chunk: as its own chunk it cost an extra topics call, forced
+    # the slower multi-chunk planning path and became a junk "goodbye" chapter.
+    indexes = sorted(buckets)
+    if len(indexes) > 1:
+        last = indexes[-1]
+        tail_seconds = buckets[last][-1].end_seconds - last * chunk_seconds
+        if tail_seconds < chunk_seconds * _TAIL_MERGE_FRACTION:
+            buckets[indexes[-2]].extend(buckets.pop(indexes[-1]))
+            indexes.pop()
+
     chunks: list[Chunk] = []
-    for index in sorted(buckets):
+    for index in indexes:
         bucket = buckets[index]
         texts: list[str] = []
         for cue in bucket:

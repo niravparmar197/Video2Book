@@ -60,8 +60,11 @@ export function registerUser(email: string): Promise<{ user_id: string; api_key:
   return request('/users', { method: 'POST', body: { email }, auth: false });
 }
 
-export function createBook(url: string): Promise<Book> {
-  return request('/books/youtube', { method: 'POST', body: { url } });
+/** The kind of book: `auto` lets the backend decide from the video. */
+export type BookGenre = 'auto' | 'lecture' | 'podcast' | 'comedy';
+
+export function createBook(url: string, genre: BookGenre = 'auto'): Promise<Book> {
+  return request('/books/youtube', { method: 'POST', body: { url, genre } });
 }
 
 export function getBook(bookId: string): Promise<Book> {

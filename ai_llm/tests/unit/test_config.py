@@ -44,10 +44,10 @@ def test_defaults_match_agents_md_table(monkeypatch):
     assert settings.book_order == "topic"
     assert settings.review_outline is True
     assert settings.pass_score == 7
-    assert settings.max_refine_attempts == 3
+    assert settings.max_refine_attempts == 2
     assert settings.max_book_hours == 30
     assert settings.max_book_cost_usd == 50
-    assert settings.volume_hours == 10
+    assert settings.volume_hours == 15
     assert settings.nvidia_api_key == ""
     assert settings.google_api_key == ""
 

@@ -18,11 +18,14 @@ def test_render_table_produces_escaped_latex_tabular():
 
     tex = render_node.render_table(data)
 
-    assert r"\begin{tabular}" in tex
-    assert r"\end{tabular}" in tex
+    # Full-width tabularx with wrapping columns after the first, so a long
+    # cell can't run off the right edge of the page.
+    assert r"\begin{tabularx}{\linewidth}{l>{\raggedright\arraybackslash}X}" in tex
+    assert r"\end{tabularx}" in tex
     assert r"\toprule" in tex
     assert r"\midrule" in tex
     assert r"\bottomrule" in tex
+    assert r"\rowcolor{V2BPrimary!12}" in tex
     assert r"\textbf{Layer} & \textbf{Size}" in tex
     assert r"Output \& More & 10" in tex
 
@@ -30,9 +33,8 @@ def test_render_table_produces_escaped_latex_tabular():
 def test_render_table_empty_rows_still_valid():
     tex = render_node.render_table({"headers": ["A"], "rows": []})
 
-    assert r"\begin{tabular}{l}" in tex
-    assert r"\begin{tabular}" in tex
-    assert r"\end{tabular}" in tex
+    assert r"\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}X}" in tex
+    assert r"\end{tabularx}" in tex
 
 
 class _FakeCompletedProcess:
@@ -66,6 +68,54 @@ def test_render_diagram_invokes_dot_with_expected_args(tmp_path):
     assert '"Input" -> "Output";' in captured["input"]
 
 
+def test_render_diagram_supports_edge_labels_and_book_styling(tmp_path):
+    captured = {}
+
+    def fake_runner(args, **kwargs):
+        captured["input"] = kwargs.get("input")
+        Path(args[args.index("-o") + 1]).write_bytes(b"fake-png")
+        return _FakeCompletedProcess(returncode=0)
+
+    render_node.render_diagram(
+        {
+            "nodes": ["Begin", "Commit", "Rollback"],
+            "edges": [["Begin", "Commit", "success"], ["Begin", "Rollback", 'any "failure"']],
+        },
+        tmp_path / "d.png",
+        runner=fake_runner,
+    )
+
+    dot = captured["input"]
+    assert '"Begin" -> "Commit" [label="success"];' in dot
+    assert '"Begin" -> "Rollback" [label="any \\"failure\\""];' in dot
+    assert 'fillcolor="#E8EEF7"' in dot
+
+
+def test_render_diagram_drops_unconnected_nodes_and_merges_case_variants(tmp_path):
+    """Seen in a real book: "Success"/"Failure" were listed as nodes but
+    only used as arrow labels, so they floated as disconnected boxes."""
+    captured = {}
+
+    def fake_runner(args, **kwargs):
+        captured["input"] = kwargs.get("input")
+        Path(args[args.index("-o") + 1]).write_bytes(b"fake-png")
+        return _FakeCompletedProcess(returncode=0)
+
+    render_node.render_diagram(
+        {
+            "nodes": ["Begin", "Execute", "Success", "Failure", "Commit"],
+            "edges": [["Begin", "Execute"], ["execute ", "commit", "if success"]],
+        },
+        tmp_path / "d.png",
+        runner=fake_runner,
+    )
+
+    dot = captured["input"]
+    assert '"Success"' not in dot and '"Failure"' not in dot
+    assert '"Execute" -> "Commit" [label="if success"];' in dot
+    assert '"execute' not in dot and '"commit"' not in dot
+
+
 def test_render_diagram_raises_on_dot_failure(tmp_path):
     def fake_runner(args, **kwargs):
         return _FakeCompletedProcess(returncode=1, stderr="syntax error")
@@ -93,3 +143,51 @@ def test_render_chart_produces_a_real_png(tmp_path):
     assert result_path.exists()
     assert result_path.read_bytes().startswith(b"\x89PNG")
     assert result_path.stat().st_size > 0
+
+
+def test_render_diagram_folds_typographic_hyphens_and_sends_dot_utf8(tmp_path):
+    captured = {}
+
+    class _Done:
+        returncode = 0
+        stderr = ""
+
+    def fake_runner(args, **kwargs):
+        captured.update(kwargs)
+        return _Done()
+
+    render_node.render_diagram(
+        {
+            "nodes": ["High\u2011Level Design", "Low-Level Design"],
+            "edges": [["High-Level Design", "Low\u2011Level Design", "next\u2011step"]],
+        },
+        tmp_path / "d.png",
+        runner=fake_runner,
+    )
+
+    dot = captured["input"]
+    assert "\u2011" not in dot
+    assert dot.count('"High-Level Design";') == 1  # one box, not two lookalikes
+    assert captured["encoding"] == "utf-8"
+
+
+def test_render_diagram_drops_arrow_only_edge_labels(tmp_path):
+    captured = {}
+
+    class _Done:
+        returncode = 0
+        stderr = ""
+
+    def fake_runner(args, **kwargs):
+        captured.update(kwargs)
+        return _Done()
+
+    render_node.render_diagram(
+        {"nodes": ["A", "B", "C"], "edges": [["A", "B", "\u2014>"], ["B", "C", "next step"]]},
+        tmp_path / "d.png",
+        runner=fake_runner,
+    )
+
+    assert '"A" -> "B";' in captured["input"]
+    assert 'label="next step"' in captured["input"]
+    assert 'label=">"' not in captured["input"]

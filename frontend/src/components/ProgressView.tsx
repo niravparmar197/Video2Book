@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { streamEvents } from '../lib/api';
-import { ChapterProgress, ProgressEvent } from '../types';
+import { ChapterProgress, PipelineWarning, ProgressEvent } from '../types';
 import { StateMessage } from './StateMessage';
 
 interface ProgressViewProps {
@@ -95,6 +95,32 @@ const ChapterSummary: React.FC<{ chapters: ChapterProgress[] }> = ({ chapters })
           style={{ width: `${percent}%` }}
         />
       </div>
+    </div>
+  );
+};
+
+const WarningsBanner: React.FC<{ warnings: PipelineWarning[] }> = ({ warnings }) => {
+  if (warnings.length === 0) return null;
+  return (
+    <div
+      data-testid="progress-warnings"
+      className="bg-error-container rounded-xl p-space-md border border-[#e3e2df]/60 shadow-sm mt-space-md"
+    >
+      <div className="flex items-center gap-2 mb-space-sm">
+        <span className="material-symbols-outlined text-[18px] text-on-error-container">
+          warning
+        </span>
+        <span className="font-title-md text-[14px] text-on-error-container font-medium">
+          {warnings.length} {warnings.length === 1 ? 'warning' : 'warnings'} during processing
+        </span>
+      </div>
+      <ul className="font-label-sm text-label-sm text-on-error-container space-y-1">
+        {warnings.map((warning, index) => (
+          <li key={`${warning.ts}-${index}`} data-testid={`progress-warning-${index}`}>
+            {warning.message}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 };
@@ -236,6 +262,14 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ bookId, onTerminal }
               <span data-testid="progress-current-node" className="font-title-md text-[14px] text-primary font-medium">
                 {progress.current_node}
               </span>
+              {progress.book_kind && (
+                <span
+                  data-testid="progress-book-kind"
+                  className="ml-auto px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-medium"
+                >
+                  {progress.book_kind}
+                </span>
+              )}
             </div>
             {progress.completed_nodes.length > 0 && (
               <ul
@@ -248,11 +282,17 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ bookId, onTerminal }
                       check_circle
                     </span>
                     {node}
+                    {progress.step_seconds?.[node] !== undefined && (
+                      <span data-testid={`progress-step-seconds-${node}`} className="text-outline">
+                        · {formatElapsed(Math.round(progress.step_seconds[node]))}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
             )}
           </div>
+          <WarningsBanner warnings={progress.warnings ?? []} />
         </>
       ) : (
         <StateMessage

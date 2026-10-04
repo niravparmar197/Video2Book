@@ -12,6 +12,7 @@ from app.youtube import (
     PlaylistEntry,
     VideoInfo,
     VideoMetadata,
+    VideoUnavailableError,
     download_audio,
     download_chunk_video,
     fetch_metadata,
@@ -566,3 +567,307 @@ def test_download_chunk_video_writes_local_file_and_scopes_range(tmp_path):
     ranges = FakeChunkDownloadYDL.last_opts["download_ranges"](None, None)
     assert ranges == [{"start_time": 1800.0, "end_time": 3600.0}]
     assert FakeChunkDownloadYDL.last_opts["force_keyframes_at_cuts"] is True
+
+
+def test_fetch_video_reuses_cached_whisper_transcript_for_a_repeat_video(tmp_path):
+    """The same video submitted for a second book must not re-download
+    audio or re-run Whisper (2.5-6 min on CPU) -- it reuses the shared
+    transcript cache written by the first run."""
+    whisper_calls = []
+
+    def spy_whisper(audio_path, vtt_path):
+        whisper_calls.append(audio_path)
+        return _fake_whisper_transcribe_writes_vtt(audio_path, vtt_path)
+
+    first = fetch_video(
+        TEST_URL, tmp_path / "book1" / "captions", ydl_factory=FakeYoutubeDLNoCaptions,
+        transcript_source="auto", whisper_transcribe=spy_whisper,
+    )
+    second = fetch_video(
+        TEST_URL, tmp_path / "book2" / "captions", ydl_factory=FakeYoutubeDLNoCaptions,
+        transcript_source="auto", whisper_transcribe=spy_whisper,
+    )
+
+    assert len(whisper_calls) == 1
+    assert Path(second.captions_path).read_text(encoding="utf-8") == Path(
+        first.captions_path
+    ).read_text(encoding="utf-8")
+
+
+def test_fetch_video_whisper_cache_is_keyed_by_video_id(tmp_path):
+    from app.youtube import transcript_cache_path
+
+    cached = transcript_cache_path("some-other-video")
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nWrong video.\n", encoding="utf-8")
+
+    video = fetch_video(
+        TEST_URL, tmp_path / "captions", ydl_factory=FakeYoutubeDLNoCaptions,
+        transcript_source="auto", whisper_transcribe=_fake_whisper_transcribe_writes_vtt,
+    )
+
+    assert "Wrong video." not in Path(video.captions_path).read_text(encoding="utf-8")
+
+
+def test_list_playlist_videos_turns_a_members_only_video_into_a_readable_error():
+    import yt_dlp
+
+    class _BlockedYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            raise yt_dlp.utils.DownloadError(
+                "ERROR: [youtube] WZjSFNPS9Lo: This video is available to this channel's members"
+            )
+
+    with pytest.raises(VideoUnavailableError) as raised:
+        list_playlist_videos("https://www.youtube.com/watch?v=WZjSFNPS9Lo", _BlockedYDL)
+
+    assert str(raised.value) == "This video is available to this channel's members"
+
+
+class _RateLimitedYDL:
+    """Every caption download answers HTTP 429; metadata-only calls succeed."""
+
+    calls = 0
+
+    def __init__(self, opts):
+        self.opts = opts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        import yt_dlp
+
+        if self.opts.get("writesubtitles"):
+            type(self).calls += 1
+            raise yt_dlp.utils.DownloadError(
+                "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+            )
+        return {"id": "vid429", "title": "Rate limited", "duration": 300}
+
+
+def test_fetch_video_goes_straight_to_whisper_on_a_429_when_the_video_has_no_other_track(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TRANSCRIPT_CACHE_DIR", str(tmp_path / "cache"))
+    _RateLimitedYDL.calls = 0
+    sleeps = []
+    transcribed = []
+    monkeypatch.setattr(
+        "app.youtube.download_audio", lambda url, output_dir, ydl_factory: tmp_path / "a.m4a"
+    )
+    (tmp_path / "a.m4a").write_bytes(b"x")
+
+    def fake_whisper(audio_path, vtt_path):
+        transcribed.append(str(vtt_path))
+        Path(vtt_path).write_text("WEBVTT\n", encoding="utf-8")
+        return Path(vtt_path)
+
+    info = fetch_video(
+        "https://www.youtube.com/watch?v=vid429",
+        tmp_path / "captions",
+        ydl_factory=_RateLimitedYDL,
+        transcript_source="auto",
+        whisper_transcribe=fake_whisper,
+        sleep=sleeps.append,
+    )
+
+    assert _RateLimitedYDL.calls == 1  # one try, no 10s/30s waiting on the translated track
+    assert sleeps == []
+    assert transcribed and info.video_id == "vid429" and info.title == "Rate limited"
+    assert Path(info.captions_path).exists()
+
+
+class _HindiVideoYDL:
+    """A Hindi video: the English track is a rate-limited machine translation,
+    the original hi-orig track downloads fine."""
+
+    requested = []
+
+    def __init__(self, opts):
+        self.opts = opts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        import yt_dlp
+
+        meta = {
+            "id": "hindi1",
+            "title": "History of Russia",
+            "duration": 1647,
+            "language": "hi",
+            "automatic_captions": {"en": [{}], "hi-orig": [{}], "bn-orig": [{}]},
+            "subtitles": {},
+        }
+        if not download:
+            return meta
+        track = self.opts["subtitleslangs"][0]
+        type(self).requested.append(track)
+        if track == "en":
+            raise yt_dlp.utils.DownloadError("ERROR: HTTP Error 429: Too Many Requests")
+        out = Path(self.opts["outtmpl"].replace("%(id)s", "hindi1").replace("%(ext)s", f"{track}.vtt"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nनमस्ते\n", encoding="utf-8"
+        )
+        return meta
+
+
+def test_fetch_video_uses_the_original_language_track_instead_of_waiting_or_whisper(tmp_path):
+    _HindiVideoYDL.requested = []
+    sleeps = []
+
+    def whisper_must_not_run(audio_path, vtt_path):
+        raise AssertionError("Whisper must not run when the original-language captions work")
+
+    info = fetch_video(
+        "https://www.youtube.com/watch?v=hindi1",
+        tmp_path / "captions",
+        ydl_factory=_HindiVideoYDL,
+        transcript_source="auto",
+        whisper_transcribe=whisper_must_not_run,
+        sleep=sleeps.append,
+    )
+
+    assert _HindiVideoYDL.requested == ["en", "hi-orig"]
+    assert sleeps == []
+    assert info.video_id == "hindi1" and info.title == "History of Russia"
+    assert info.captions_path.endswith("hindi1.hi-orig.vtt")
+    assert "नमस्ते" in Path(info.captions_path).read_text(encoding="utf-8")
+
+
+def test_fetch_video_captions_only_mode_raises_a_clear_error_on_persistent_429(tmp_path):
+    with pytest.raises(CaptionsUnavailableError, match="rate-limiting"):
+        fetch_video(
+            "https://www.youtube.com/watch?v=vid429",
+            tmp_path / "captions",
+            ydl_factory=_RateLimitedYDL,
+            transcript_source="captions",
+            sleep=lambda seconds: None,
+        )
+
+
+class _RecordingYDL:
+    seen = []
+
+    def __init__(self, opts):
+        type(self).seen.append(opts)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        return {"id": "abc", "title": "T", "duration": 60}
+
+
+def test_youtube_cookies_file_is_passed_to_every_yt_dlp_call(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_COOKIES_FILE", "C:/me/youtube_cookies.txt")
+    monkeypatch.setenv("YOUTUBE_COOKIES_BROWSER", "firefox")  # the file wins
+    _RecordingYDL.seen = []
+
+    fetch_metadata("https://www.youtube.com/watch?v=abc", ydl_factory=_RecordingYDL)
+
+    assert _RecordingYDL.seen[-1]["cookiefile"] == "C:/me/youtube_cookies.txt"
+    assert "cookiesfrombrowser" not in _RecordingYDL.seen[-1]
+
+
+def test_youtube_cookies_browser_is_used_when_no_file_is_set(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_COOKIES_BROWSER", "edge")
+    _RecordingYDL.seen = []
+
+    fetch_metadata("https://www.youtube.com/watch?v=abc", ydl_factory=_RecordingYDL)
+
+    assert _RecordingYDL.seen[-1]["cookiesfrombrowser"] == ("edge",)
+
+
+def test_no_cookies_configured_leaves_yt_dlp_options_unchanged():
+    _RecordingYDL.seen = []
+
+    fetch_metadata("https://www.youtube.com/watch?v=abc", ydl_factory=_RecordingYDL)
+
+    assert "cookiefile" not in _RecordingYDL.seen[-1]
+    assert "cookiesfrombrowser" not in _RecordingYDL.seen[-1]
+
+
+class _NoNetworkYDL:
+    def __init__(self, opts):
+        raise AssertionError("a cached video must not contact YouTube")
+
+
+def test_a_video_fetched_once_is_served_from_the_shared_cache_without_youtube(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRANSCRIPT_CACHE_DIR", str(tmp_path / "cache"))
+    _HindiVideoYDL.requested = []
+    first = fetch_video(
+        "https://www.youtube.com/watch?v=hindi1", tmp_path / "book1", ydl_factory=_HindiVideoYDL,
+        transcript_source="auto", sleep=lambda s: None,
+    )
+
+    second = fetch_video(
+        "https://youtu.be/hindi1", tmp_path / "book2", ydl_factory=_NoNetworkYDL, transcript_source="auto"
+    )
+    metadata = fetch_metadata("https://www.youtube.com/watch?v=hindi1&t=29s", ydl_factory=_NoNetworkYDL)
+
+    assert (second.video_id, second.title, second.duration_seconds) == ("hindi1", "History of Russia", 1647)
+    assert Path(second.captions_path).parent == tmp_path / "book2"
+    assert Path(second.captions_path).read_text(encoding="utf-8") == Path(first.captions_path).read_text(encoding="utf-8")
+    assert metadata.title == "History of Russia" and metadata.duration_seconds == 1647
+
+
+def test_a_cached_whisper_transcript_from_an_older_recipe_is_not_reused(tmp_path, monkeypatch):
+    import json as json_module
+
+    monkeypatch.setenv("TRANSCRIPT_CACHE_DIR", str(tmp_path / "cache"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "abcdefghijk.transcript.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    (cache / "abcdefghijk.meta.json").write_text(
+        json_module.dumps({"title": "T", "duration_seconds": 60, "transcript_recipe": "base-old-v0"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="must not contact YouTube"):
+        fetch_video(
+            "https://www.youtube.com/watch?v=abcdefghijk", tmp_path / "b", ydl_factory=_NoNetworkYDL,
+            transcript_source="auto",
+        )
+
+
+def test_every_yt_dlp_call_pauses_between_requests():
+    _RecordingYDL.seen = []
+
+    fetch_metadata("https://www.youtube.com/watch?v=zzzzzzzzzzz", ydl_factory=_RecordingYDL)
+
+    assert _RecordingYDL.seen[-1]["sleep_interval_requests"] > 0
+
+
+def test_a_cached_single_video_link_resolves_without_youtube(tmp_path, monkeypatch):
+    import json as json_module
+
+    monkeypatch.setenv("TRANSCRIPT_CACHE_DIR", str(tmp_path))
+    (tmp_path / "abcdefghijk.meta.json").write_text(
+        json_module.dumps({"title": "Cached", "duration_seconds": 60}), encoding="utf-8"
+    )
+
+    entries = list_playlist_videos("https://www.youtube.com/watch?v=abcdefghijk&t=29s", _NoNetworkYDL)
+
+    assert [(e.video_id, e.title) for e in entries] == [("abcdefghijk", "Cached")]

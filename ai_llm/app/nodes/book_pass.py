@@ -1,4 +1,4 @@
-"""Book-pass node: preface, glossary, and subject-index terms (sprints/v6 PRD.md).
+"""Book-pass node: glossary and subject-index terms (sprints/v6 PRD.md).
 
 Grounded in the book's own written content, never invented -- root
 AGENTS.md rules for AI-writing steps apply here too. Runs after write
@@ -11,16 +11,16 @@ book.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.llm import call_writer
 
 _GLOSSARY_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "glossary.md"
-_INDEX_TERMS_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "index_terms.md"
-_PREFACE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "preface.md"
 
 _JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
 
@@ -76,6 +76,32 @@ def _load_glossary_prompt(chapters: list[dict]) -> str:
     return template.format(chapters=chapters_text)
 
 
+# One glossary call over every chapter's notes is fine for a 10-minute video
+# but at ~13 hours (40+ chapters) it is tens of thousands of tokens: slow, and
+# a real risk of hitting the request timeout. Chapters are sent in batches
+# (about 15k tokens each) in parallel and the terms merged.
+_GLOSSARY_BATCH_CHARS = 60_000
+_GLOSSARY_PARALLEL_CALLS = 3
+
+
+def _glossary_batches(chapters: list[dict]) -> list[list[dict]]:
+    """Group chapters, in order, into batches of at most ~_GLOSSARY_BATCH_CHARS
+    of notes (a single oversized chapter gets a batch of its own)."""
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    size = 0
+    for chapter in chapters:
+        chapter_size = len(chapter["notes"]) + len(chapter["title"])
+        if current and size + chapter_size > _GLOSSARY_BATCH_CHARS:
+            batches.append(current)
+            current, size = [], 0
+        current.append(chapter)
+        size += chapter_size
+    if current:
+        batches.append(current)
+    return batches or [[]]
+
+
 def run_glossary(chapters: list[dict], output_dir: str | Path) -> list[dict]:
     """Extract + merge a glossary across every chapter's final notes.
 
@@ -86,15 +112,28 @@ def run_glossary(chapters: list[dict], output_dir: str | Path) -> list[dict]:
     definition wins for a repeated term.
     """
     output_dir = Path(output_dir)
-    prompt = _load_glossary_prompt(chapters)
 
-    raw = _call_with_retry(prompt)
-    if raw is None:
-        logger.warning(
-            "glossary extraction produced no usable JSON array after a retry; "
-            "degrading to an empty glossary"
-        )
-        raw = []
+    batches = _glossary_batches(chapters)
+    with ThreadPoolExecutor(max_workers=min(len(batches), _GLOSSARY_PARALLEL_CALLS)) as pool:
+        # Each call runs in a copy of this thread's context so per-run context
+        # (which book's warnings file to write to) follows it onto pool threads.
+        futures = [
+            pool.submit(contextvars.copy_context().run, _call_with_retry, _load_glossary_prompt(batch))
+            for batch in batches
+        ]
+        batch_results = [future.result() for future in futures]
+
+    raw: list = []
+    for batch_index, batch_result in enumerate(batch_results, start=1):
+        if batch_result is None:
+            logger.warning(
+                "glossary extraction for chapter batch %s of %s produced no usable JSON "
+                "array after a retry; that batch contributes no terms",
+                batch_index,
+                len(batches),
+            )
+        else:
+            raw.extend(batch_result)
 
     seen: set[str] = set()
     glossary: list[dict] = []
@@ -121,69 +160,45 @@ def index_terms_json_path(chapter_id: str, output_dir: str | Path) -> Path:
     return Path(output_dir) / "work" / "book_pass" / f"index_terms_{chapter_id}.json"
 
 
-def _load_index_terms_prompt(notes: str) -> str:
-    template = _INDEX_TERMS_PROMPT_PATH.read_text(encoding="utf-8")
-    return template.format(notes=notes)
+# **bold** spans of 1-4 words: the terms the writer marks where they are
+# first defined (the style rules ask for exactly that).
+_BOLD_TERM_RE = re.compile(r"\*\*([^*\n]{2,40})\*\*")
+_MAX_INDEX_TERMS = 10
 
 
-def run_index_terms(chapter_id: str, notes: str, output_dir: str | Path) -> list[str]:
-    """Extract genuinely index-worthy terms from one chapter's notes.
+def index_terms_from_notes(notes: str, glossary_terms: list[str]) -> list[str]:
+    """A chapter's subject-index terms with no LLM call: every glossary term
+    the chapter mentions, then the terms it puts in **bold**, deduped
+    case-insensitively, at most _MAX_INDEX_TERMS.
 
-    Degrades to an empty term list (rather than raising) if the response
-    never yields a usable JSON array, even after a retry -- a chapter
-    missing index terms must not block the book.
+    This used to be one LLM call per chapter -- on a real 4-hour book the
+    glossary + index step took 190s, most of it these calls -- for terms the
+    glossary and the writer's own bold marks already name.
     """
-    output_dir = Path(output_dir)
-    prompt = _load_index_terms_prompt(notes)
-
-    raw = _call_with_retry(prompt)
-    if raw is None:
-        logger.warning(
-            "index term extraction for chapter %s produced no usable JSON array after a "
-            "retry; degrading to an empty term list",
-            chapter_id,
-        )
-        raw = []
+    lowered = notes.lower()
+    candidates = [term for term in glossary_terms if term.lower() in lowered]
+    for match in _BOLD_TERM_RE.finditer(notes):
+        term = match.group(1).strip().rstrip(":.,;")
+        if 1 <= len(term.split()) <= 4 and any(character.isalpha() for character in term):
+            candidates.append(term)
 
     terms: list[str] = []
     seen: set[str] = set()
-    for entry in raw:
-        term = str(entry).strip()
+    for term in candidates:
         key = term.lower()
-        if not term or key in seen:
-            continue
-        seen.add(key)
-        terms.append(term)
+        if key not in seen:
+            seen.add(key)
+            terms.append(term)
+    return terms[:_MAX_INDEX_TERMS]
 
+
+def run_index_terms(
+    chapter_id: str, notes: str, output_dir: str | Path, glossary_terms: list[str] | None = None
+) -> list[str]:
+    """Write work/book_pass/index_terms_<chapter_id>.json (see
+    index_terms_from_notes) and return the terms."""
+    terms = index_terms_from_notes(notes, glossary_terms or [])
     path = index_terms_json_path(chapter_id, output_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(terms, indent=2, ensure_ascii=False), encoding="utf-8")
     return terms
-
-
-def preface_path(output_dir: str | Path) -> Path:
-    return Path(output_dir) / "work" / "book_pass" / "preface.md"
-
-
-def _load_preface_prompt(chapter_titles: list[str]) -> str:
-    template = _PREFACE_PROMPT_PATH.read_text(encoding="utf-8")
-    titles_list = "\n".join(f"- {title}" for title in chapter_titles)
-    return template.format(chapter_titles=titles_list)
-
-
-def run_preface(chapters: list[dict], output_dir: str | Path) -> Path:
-    """Generate a short preface from the book's chapter/topic titles.
-
-    `chapters` is a list of {"title": ...} in book order -- whole-book
-    scope, not per-chapter notes, so the preface can only speak in general
-    terms about what's covered (root AGENTS.md: never invent facts).
-    """
-    output_dir = Path(output_dir)
-    titles = [chapter["title"] for chapter in chapters]
-    prompt = _load_preface_prompt(titles)
-    preface_text = call_writer(prompt).strip()
-
-    path = preface_path(output_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(preface_text + "\n", encoding="utf-8")
-    return path

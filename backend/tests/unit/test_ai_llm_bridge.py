@@ -20,6 +20,13 @@ def test_get_chapter_progress_is_importable_and_callable():
     ]
 
 
+def test_get_warnings_is_importable_and_callable():
+    assert callable(ai_llm_bridge.get_warnings)
+    assert list(inspect.signature(ai_llm_bridge.get_warnings).parameters) == [
+        "output_dir",
+    ]
+
+
 def test_estimate_playlist_is_importable_and_callable():
     assert callable(ai_llm_bridge.estimate_playlist)
     assert list(inspect.signature(ai_llm_bridge.estimate_playlist).parameters) == [

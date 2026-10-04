@@ -67,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_timings(output_dir: str | Path) -> None:
+    """Seconds per pipeline step, from <output_dir>/timings.json."""
+    from app.graph import get_timings
+
+    timings = get_timings(output_dir)
+    if timings:
+        steps = ", ".join(f"{node} {seconds:.0f}s" for node, seconds in timings.items())
+        print(f"Time per step: {steps}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -93,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
         pdf_path = resume_book(args.resume)
         print(f"Book updated: {pdf_path}")
+        _print_timings(args.resume)
         return 0
 
     from app.graph import run_book
@@ -100,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = _output_dir_for_url(args.url)
     pdf_path = run_book(args.url, output_dir, force=args.force)
     print(f"Book written: {pdf_path}")
+    _print_timings(output_dir)
     return 0
 
 

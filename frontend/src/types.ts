@@ -49,10 +49,21 @@ export interface ChapterProgress {
   passed: boolean | null;
 }
 
+export interface PipelineWarning {
+  ts: string;
+  logger: string;
+  message: string;
+}
+
 export interface ProgressEvent {
   current_node: string;
   completed_nodes: string[];
   chapters: ChapterProgress[];
   percent: number;
   elapsed_seconds: number;
+  warnings: PipelineWarning[];
+  /** "Study Notes" / "Podcast Notes" / "Comedy Recap" once decided. */
+  book_kind?: string | null;
+  /** Seconds each finished pipeline step took, keyed by node name. */
+  step_seconds?: Record<string, number>;
 }

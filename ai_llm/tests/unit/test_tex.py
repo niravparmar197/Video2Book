@@ -18,7 +18,6 @@ from app.latex.tex import (
     render_book_volumes,
     render_chapter,
     render_glossary,
-    render_topic_index,
     split_into_volumes,
 )
 
@@ -72,6 +71,69 @@ def test_markdown_notes_to_sections_parses_headings_and_paragraphs():
     ]
     assert sections[1].heading == "Gradient Descent"
     assert sections[1].paragraphs == ["Gradient descent minimizes the loss function."]
+
+
+def test_markdown_notes_to_sections_converts_deeper_headings_to_bold_paragraphs():
+    """Verified against a real compiled book: the writer model nested
+    sub-points under a single ## section using ### (e.g. "### Atomicity"),
+    and the old code dumped that literally into the book body since only
+    a #-escaping pass ran on it -- it must become a bolded sub-heading
+    paragraph instead, not literal hash marks in the reader's book.
+    """
+    sections = markdown_notes_to_sections(
+        "## ACID Properties\n\n"
+        "Intro paragraph.\n\n"
+        "### Atomicity\n\n"
+        "Atomicity means all or nothing.\n\n"
+        "### Consistency\n\n"
+        "Consistency keeps the database valid.\n"
+    )
+
+    assert len(sections) == 1
+    assert sections[0].paragraphs == [
+        "Intro paragraph.",
+        r"\colorbox{V2BRule!25}{\textbf{\color{V2BPrimary}Atomicity}}",
+        "Atomicity means all or nothing.",
+        r"\colorbox{V2BRule!25}{\textbf{\color{V2BPrimary}Consistency}}",
+        "Consistency keeps the database valid.",
+    ]
+    assert "###" not in " ".join(sections[0].paragraphs)
+
+
+def test_markdown_notes_to_sections_converts_h1_heading_to_bold_paragraph():
+    sections = markdown_notes_to_sections("## Section\n\n# Not a real top heading\n\nBody.\n")
+
+    assert sections[0].paragraphs == [
+        r"\colorbox{V2BRule!25}{\textbf{\color{V2BPrimary}Not a real top heading}}",
+        "Body.",
+    ]
+
+
+def test_markdown_notes_to_sections_renders_bullets_as_a_real_list():
+    """Bullets used to be merged into the surrounding paragraph with
+    literal dashes ("- a - b"), so study notes read as walls of prose."""
+    sections = markdown_notes_to_sections(
+        "## ACID\n\nIntro.\n\n"
+        "- **Atomicity**: all or nothing\n"
+        "- Consistency: stays valid\n"
+        "  across steps\n\n"
+        "After.\n"
+    )
+
+    assert sections[0].paragraphs == [
+        "Intro.",
+        "\\begin{itemize}\n"
+        "\\item \\textbf{Atomicity}: all or nothing\n"
+        "\\item Consistency: stays valid across steps\n"
+        "\\end{itemize}",
+        "After.",
+    ]
+
+
+def test_markdown_notes_to_sections_bold_line_is_not_mistaken_for_a_bullet():
+    sections = markdown_notes_to_sections("## T\n\n**Atomicity** means all or nothing.\n")
+
+    assert sections[0].paragraphs == [r"\textbf{Atomicity} means all or nothing."]
 
 
 def test_markdown_notes_to_sections_escapes_special_chars_in_content():
@@ -378,25 +440,8 @@ def test_render_chapter_skips_a_term_not_present_in_the_chapter(tmp_path):
     assert r"\index{" not in content
 
 
-def test_render_topic_index_lists_titles_in_order(tmp_path):
-    chapters = [{"title": "Vectors"}, {"title": "Gradient Descent"}, {"title": "Backpropagation"}]
-
-    tex_path = render_topic_index(chapters, tmp_path)
-
-    assert tex_path == tmp_path / "chapters" / "topic_index.tex"
-    content = tex_path.read_text(encoding="utf-8")
-    assert (
-        content.index("Vectors")
-        < content.index("Gradient Descent")
-        < content.index("Backpropagation")
-    )
 
 
-def test_render_topic_index_escapes_special_characters(tmp_path):
-    tex_path = render_topic_index([{"title": "50% Progress & More"}], tmp_path)
-    content = tex_path.read_text(encoding="utf-8")
-
-    assert r"50\% Progress \& More" in content
 
 
 def test_render_glossary_writes_escaped_entries(tmp_path):
@@ -415,39 +460,6 @@ def test_render_glossary_writes_escaped_entries(tmp_path):
     assert r"\$ signs \& percentages" in content
 
 
-def test_render_book_assembles_front_and_back_matter_in_order(tmp_path):
-    render_chapter("chapter1", "Chapter One", SAMPLE_NOTES, tmp_path)
-    render_topic_index([{"title": "Chapter One"}], tmp_path)
-
-    preface_path = tmp_path / "preface.md"
-    preface_path.write_text("This book covers the basics.\n\nEnjoy!\n", encoding="utf-8")
-
-    main_tex_path = render_book(
-        ["chapter1"],
-        tmp_path,
-        preface_path=preface_path,
-        glossary_entries=[{"term": "Term", "definition": "Definition."}],
-        include_topic_index=True,
-    )
-    content = main_tex_path.read_text(encoding="utf-8")
-
-    title_pos = content.index(r"\begin{titlepage}")
-    preface_pos = content.index("This book covers the basics.")
-    toc_pos = content.index(r"\tableofcontents")
-    chapter_pos = content.index(r"\input{chapter1}")
-    glossary_pos = content.index(r"\input{glossary}")
-    index_pos = content.index(r"\printindex")
-    topic_index_pos = content.index(r"\input{topic_index}")
-
-    assert (
-        title_pos
-        < preface_pos
-        < toc_pos
-        < chapter_pos
-        < glossary_pos
-        < index_pos
-        < topic_index_pos
-    )
 
 
 def test_render_book_without_optional_matter_omits_those_sections(tmp_path):
@@ -458,7 +470,6 @@ def test_render_book_without_optional_matter_omits_those_sections(tmp_path):
 
     assert "Preface" not in content
     assert r"\input{glossary}" not in content
-    assert r"\input{topic_index}" not in content
     assert r"\printindex" in content  # always present, harmless when empty
 
 
@@ -506,27 +517,260 @@ def test_render_book_volumes_produces_one_file_per_group(tmp_path):
     assert "Volume 2" in vol2
 
 
-def test_render_book_volumes_puts_preface_in_first_and_back_matter_in_last(tmp_path):
+
+def test_render_book_assembles_front_and_back_matter_in_order(tmp_path):
+    render_chapter("chapter1", "Chapter One", SAMPLE_NOTES, tmp_path)
+
+    main_tex_path = render_book(
+        ["chapter1"],
+        tmp_path,
+        glossary_entries=[{"term": "Term", "definition": "Definition."}],
+    )
+    content = main_tex_path.read_text(encoding="utf-8")
+
+    assert (
+        content.index(r"\begin{titlepage}")
+        < content.index(r"\tableofcontents")
+        < content.index(r"\input{chapter1}")
+        < content.index(r"\input{glossary}")
+        < content.index(r"\printindex")
+    )
+
+
+def test_render_book_volumes_puts_back_matter_in_last_volume_only(tmp_path):
     render_chapter("vid1", "Video One", SAMPLE_NOTES, tmp_path)
     render_chapter("vid2", "Video Two", SAMPLE_NOTES, tmp_path)
-    render_topic_index([{"title": "Video One"}, {"title": "Video Two"}], tmp_path)
-
-    preface_path = tmp_path / "preface.md"
-    preface_path.write_text("This book covers two videos.\n", encoding="utf-8")
 
     paths = render_book_volumes(
         [["vid1"], ["vid2"]],
         tmp_path,
-        preface_path=preface_path,
         glossary_entries=[{"term": "Term", "definition": "Def."}],
-        include_topic_index=True,
     )
     vol1 = paths[0].read_text(encoding="utf-8")
     vol2 = paths[1].read_text(encoding="utf-8")
 
-    assert "This book covers two videos." in vol1
-    assert "This book covers two videos." not in vol2
     assert r"\input{glossary}" not in vol1
     assert r"\input{glossary}" in vol2
-    assert r"\input{topic_index}" not in vol1
-    assert r"\input{topic_index}" in vol2
+
+
+def test_callout_lines_render_as_boxed_callouts():
+    sections = markdown_notes_to_sections(
+        "## Topic\n"
+        "> Key point: Atomicity means all or nothing.\n"
+        "> **Example:** A bank transfer.\n"
+        "> Watch out: Partial writes & 50% failures.\n"
+    )
+
+    paragraphs = sections[0].paragraphs
+    assert paragraphs[0] == r"\notecallout{Key Point}{V2BRule}{V2BCalloutGold}{Atomicity means all or nothing.}"
+    assert paragraphs[1].startswith(r"\notecallout{Example}{V2BAccent}{V2BCalloutTeal}")
+    assert paragraphs[2] == (
+        r"\notecallout{Watch Out}{V2BWarn}{V2BCalloutRed}{Partial writes \& 50\% failures.}"
+    )
+
+
+def test_double_equals_phrases_render_as_highlights():
+    sections = markdown_notes_to_sections("## Topic\nThe ==commit point== is where changes become permanent.\n")
+
+    assert r"\colorbox{V2BHighlight}{\strut commit point}" in sections[0].paragraphs[0]
+
+
+def test_highlight_and_callout_compile_in_main_template(tmp_path):
+    render_chapter("c1", "Chapter", "## Topic\n> Key point: ==Important== idea.\n", tmp_path)
+    content = render_book(["c1"], tmp_path).read_text(encoding="utf-8")
+
+    assert r"\newcommand{\notecallout}" in content
+    assert r"\definecolor{V2BHighlight}" in content
+
+
+def test_one_line_code_fence_becomes_a_monospace_block_not_literal_backticks():
+    sections = markdown_notes_to_sections(
+        "## Is-a\n``` Vehicle ← TwoWheeler (is a Vehicle) ```\n"
+    )
+
+    block = sections[0].paragraphs[0]
+    assert block.startswith(r"\begin{flushleft}\ttfamily")
+    assert "```" not in block
+    assert "Vehicle <- TwoWheeler (is a Vehicle)" in block  # arrow glyph spelled out
+
+
+def test_multiline_code_fence_keeps_line_breaks_and_indentation_and_escapes_text():
+    sections = markdown_notes_to_sections(
+        "## Classes\n```text\nVehicle\n  TwoWheeler & Co_1\n```\nAfter the block.\n"
+    )
+
+    block, after = sections[0].paragraphs
+    assert "Vehicle \\\\\n" in block
+    assert r"\hspace*{1.0em}TwoWheeler \& Co\_1" in block
+    assert after == "After the block."
+
+
+def test_empty_code_fence_is_dropped():
+    sections = markdown_notes_to_sections("## Empty\n```\n\n```\nText.\n")
+
+    assert sections[0].paragraphs == ["Text."]
+
+
+def test_unlabeled_quote_line_is_still_a_callout_not_a_literal_angle_bracket():
+    sections = markdown_notes_to_sections(
+        "## Topic\n> Think of it like a blueprint for a house.\n> Just a remark.\n"
+    )
+
+    analogy, remark = sections[0].paragraphs
+    assert analogy.startswith(r"\notecallout{Example}{V2BAccent}{V2BCalloutTeal}")
+    assert remark.startswith(r"\notecallout{Key Point}")
+    assert ">" not in analogy.replace(r"\notecallout", "")
+
+
+def test_compile_chapter_forces_a_rebuild_and_leads_the_error_with_the_real_latex_error(tmp_path):
+    calls = []
+
+    class _Failed:
+        returncode = 12
+        stdout = "Latexmk: loading...\n(a.sty)\n! LaTeX Error: Too many unprocessed floats.\nl.487 ..."
+        stderr = ""
+
+    def fake_runner(args, **kwargs):
+        calls.append(args)
+        return _Failed()
+
+    tex_path = tmp_path / "main.tex"
+    tex_path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as raised:
+        compile_chapter(tex_path, runner=fake_runner)
+
+    assert "-g" in calls[0]
+    message = str(raised.value)
+    assert message.split("\n")[0].endswith("! LaTeX Error: Too many unprocessed floats.")
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("Low Level Design", "Low Level Design"),
+        ("Café Münchën — design", "Café Münchën — design"),  # accented Latin is fine
+        ("History of Russia — 1500 सालों की कहानी, 30 मिनट में", "History of Russia — 1500"),
+        ("सालों की कहानी", "FALLBACK"),  # nothing renderable left
+        ("AI — ИИ", "FALLBACK"),  # 2 Latin letters is too little
+    ],
+)
+def test_renderable_title_cuts_at_the_first_non_latin_letter(title, expected):
+    from app.latex.tex import renderable_title
+
+    assert renderable_title(title, "FALLBACK") == expected
+
+
+def test_render_book_and_chapter_never_print_a_non_latin_title(tmp_path):
+    hindi = "History of Russia — 1500 सालों की कहानी"
+    chapter = render_chapter("c1", hindi, "## Topic\nText.\n", tmp_path).read_text(encoding="utf-8")
+    main = render_book(["c1"], tmp_path, book_title=hindi).read_text(encoding="utf-8")
+
+    assert "History of Russia" in chapter and "सालों" not in chapter
+    assert "History of Russia" in main and "सालों" not in main
+
+
+def test_quote_callout_renders_in_its_own_style():
+    sections = markdown_notes_to_sections('## Bit\n> Quote: "My kids think 50% is a grade & a lifestyle."\n')
+
+    assert sections[0].paragraphs[0] == (
+        r"\notecallout{Quote}{V2BQuote}{V2BCalloutPurple}"
+        "{“My kids think 50\\% is a grade \\& a lifestyle.”}"
+    )
+
+
+def test_title_page_names_the_kind_of_book(tmp_path):
+    render_chapter("c1", "Chapter", "## T\nText.\n", tmp_path)
+
+    assert "Podcast Notes" in render_book(["c1"], tmp_path, book_kind="Podcast Notes").read_text(encoding="utf-8")
+    assert "Study Notes" in render_book(["c1"], tmp_path).read_text(encoding="utf-8")
+
+
+def test_inline_code_renders_as_typewriter_not_literal_backticks():
+    sections = markdown_notes_to_sections("## T\nThe word `==Schadenfreude==` and `key_value`.\n")
+
+    paragraph = sections[0].paragraphs[0]
+    assert "`" not in paragraph
+    assert r"\texttt{\colorbox{V2BHighlight}{\strut Schadenfreude}}" in paragraph
+    assert r"\texttt{key\_value}" in paragraph
+
+
+def test_markdown_divider_lines_are_dropped_not_printed_as_dashes():
+    sections = markdown_notes_to_sections("## A\nText.\n\n---\n\n## B\n- item\n***\n")
+
+    assert sections[0].paragraphs == ["Text."]
+    assert all("---" not in p and "***" not in p for p in sections[1].paragraphs)
+
+
+def test_screenshots_go_to_the_section_whose_time_they_fall_in_and_sections_link_to_youtube(tmp_path):
+    shots = []
+    for seconds in (15, 130, 320):
+        path = tmp_path / "assets" / "ab_c-D1" / f"000_{seconds}.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"jpg")
+        shots.append({"asset_path": str(path), "timestamp_seconds": seconds})
+    notes = "## One\nText.\n\n## Two\nText.\n\n## Three\nText.\n\n## Key Takeaways\n- x\n"
+    times = [("ab_c-D1", 10.0), ("ab_c-D1", 120.0), ("ab_c-D1", 300.0), None]
+
+    content = render_chapter("c1", "Ch", notes, tmp_path, screenshots=shots, section_times=times).read_text(
+        encoding="utf-8"
+    )
+
+    one, two, three, takeaways = content.split(r"\section{")[1:]
+    assert "000_15.jpg" in one and "000_130.jpg" in two and "000_320.jpg" in three
+    assert r"\href{https://youtu.be/ab_c-D1?t=120}{Watch this part on YouTube from 02:00}" in two
+    assert r"\href{https://youtu.be/ab_c-D1?t=130}{Screenshot at 02:10 -- watch on YouTube}" in two
+    assert "youtu.be" not in takeaways
+
+
+def test_without_section_times_screenshots_are_still_spread_evenly(tmp_path):
+    shots = []
+    for seconds in (15, 130):
+        path = tmp_path / "assets" / "vid" / f"000_{seconds}.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"jpg")
+        shots.append({"asset_path": str(path), "timestamp_seconds": seconds})
+
+    content = render_chapter("c1", "Ch", "## One\nA.\n\n## Two\nB.\n", tmp_path, screenshots=shots).read_text(
+        encoding="utf-8"
+    )
+
+    one, two = content.split(r"\section{")[1:]
+    assert "000_15.jpg" in one and "000_130.jpg" in two
+    assert "Watch this part" not in content
+
+
+_WITH_QUIZ = (
+    "## Caching\n> Key point: A cache keeps hot data close.\n\n"
+    "## Key Takeaways\n- Caches are fast.\n\n"
+    "## Test Yourself\n"
+    "Q: What does a cache keep?\nA: A copy of data you use often.\n"
+    "**Q:** Why is a cache fast?\n**A:** It is close to the user & in memory.\n"
+)
+
+
+def test_test_yourself_questions_stay_in_the_chapter_and_answers_go_to_the_back(tmp_path):
+    chapter = render_chapter("c1", "Caching", _WITH_QUIZ, tmp_path).read_text(encoding="utf-8")
+    main = render_book(["c1"], tmp_path).read_text(encoding="utf-8")
+
+    quiz = chapter.split(r"\section{Test Yourself}")[1]
+    assert r"\textbf{Q1.} What does a cache keep?" in quiz
+    assert r"\textbf{Q2.} Why is a cache fast?" in quiz
+    assert "A copy of data" not in chapter  # the answer is not printed under the question
+    answers = main.split(r"\chapter*{Answers to Test Yourself}")[1]
+    assert r"\section*{Caching}" in answers
+    assert r"\item A copy of data you use often." in answers
+    assert r"\item It is close to the user \& in memory." in answers
+
+
+def test_notes_without_a_quiz_add_no_answers_section(tmp_path):
+    render_chapter("c1", "Plain", "## One\nText.\n", tmp_path)
+
+    assert "Answers to Test Yourself" not in render_book(["c1"], tmp_path).read_text(encoding="utf-8")
+
+
+def test_the_answers_hint_is_italic_not_literal_underscores(tmp_path):
+    chapter = render_chapter("c1", "Caching", _WITH_QUIZ, tmp_path).read_text(encoding="utf-8")
+
+    assert r"\textit{Answers are at the back of the book.}" in chapter
+    assert "\_Answers" not in chapter

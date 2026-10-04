@@ -26,41 +26,53 @@ compiled to book.pdf.
 """
 from __future__ import annotations
 
+import contextvars
+import functools
 import json
+import logging
 import shutil
+import threading
+import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, TypedDict, TypeVar
+from typing import Callable, Iterator, TypedDict, TypeVar
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.cache import run_cached
 from app.config import load_settings
+from app.export import write_epub, write_markdown_book
 from app.latex.tex import (
     compile_chapter,
     render_book,
     render_book_volumes,
     render_chapter,
-    render_topic_index,
     split_into_volumes,
 )
+from app.nodes.align import chapter_section_times
 from app.nodes.book_pass import (
     glossary_json_path,
     index_terms_json_path,
-    preface_path as preface_file_path_for,
     run_glossary,
     run_index_terms,
-    run_preface,
 )
 from app.nodes.chunk import run_chunk
 from app.nodes.fetch import run_fetch_playlist
 from app.nodes.frames import load_screenshots_for_sources, load_video_screenshots, run_frames
+from app.nodes.genre import BOOK_KINDS, genre_json_path, load_genre, run_genre
 from app.nodes.order import run_order_topics
 from app.nodes.outline import outline_json_path, run_outline, run_topic_outline
-from app.nodes.plan import run_plan_topics
-from app.nodes.topics import run_topics, topics_output_path
+from app.nodes.plan import plan_json_path, run_plan_topics, run_single_chunk_plan
+from app.nodes.topics import (
+    run_topics,
+    topics_from_youtube_chapters,
+    topics_output_path,
+    write_topics,
+)
 from app.nodes.write import chapter_status_path, notes_output_path, run_write, run_write_topic
 
 
@@ -70,6 +82,8 @@ class VideoRef(TypedDict):
     url: str
     captions_path: str
     duration_seconds: int
+    channel: str
+    chapters: list[dict]
 
 
 class BookState(TypedDict, total=False):
@@ -86,6 +100,42 @@ class BookState(TypedDict, total=False):
     pdf_path: str
 
 
+_timings_lock = threading.Lock()
+
+
+def timings_path(output_dir: str | Path) -> Path:
+    """Where each graph node's wall-clock seconds are recorded, so a slow run
+    shows exactly which step to optimize instead of guessing."""
+    return Path(output_dir) / "timings.json"
+
+
+def get_timings(output_dir: str | Path) -> dict[str, float]:
+    """Read-only: seconds spent per node so far ({} before any node ran)."""
+    path = timings_path(output_dir)
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _record_timing(output_dir: str | Path, node: str, seconds: float) -> None:
+    # `frames` and `topics` run in parallel, hence the lock around the
+    # read-modify-write of the shared file.
+    with _timings_lock:
+        timings = get_timings(output_dir)
+        timings[node] = round(seconds, 1)
+        timings_path(output_dir).write_text(json.dumps(timings, indent=2), encoding="utf-8")
+
+
+def _timed(name: str, node_fn: Callable[[BookState], dict]) -> Callable[[BookState], dict]:
+    @functools.wraps(node_fn)
+    def wrapper(state: BookState) -> dict:
+        start = time.monotonic()
+        try:
+            return node_fn(state)
+        finally:
+            _record_timing(state["output_dir"], name, time.monotonic() - start)
+
+    return wrapper
+
+
 def _fetch_node(state: BookState) -> dict:
     videos = run_fetch_playlist(state["url"], state["output_dir"])
     return {
@@ -96,6 +146,8 @@ def _fetch_node(state: BookState) -> dict:
                 "url": video.url,
                 "captions_path": video.captions_path,
                 "duration_seconds": video.duration_seconds,
+                "channel": video.channel,
+                "chapters": list(video.chapters),
             }
             for video in videos
         ]
@@ -108,15 +160,20 @@ def _fetch_node(state: BookState) -> dict:
 # because 4 independent chapters were written sequentially, and that cost
 # scales linearly (not sub-linearly) with a 30-hour playlist's ~60 chunks.
 # Bounded rather than unbounded so a huge playlist doesn't spawn hundreds of
-# threads at once; NVIDIA's 40 RPM cap (app/llm.py's _pace, now thread-safe)
-# is still what actually limits real call throughput.
-_MAX_PARALLEL_LLM_CALLS = 4
+# threads at once; NVIDIA's 40 RPM cap (app/llm.py's _pace, thread-safe) is
+# what actually limits throughput. The LLM bound is LLM_PARALLEL_CALLS
+# (default 12; measured: 8 real writer calls in parallel finished in 63s vs
+# 42s for one, so an 8-hour video's ~40 chapters take minutes, not the ~20
+# minutes 4-at-a-time did). ffmpeg scans are CPU work, so they stay at 4.
+_MAX_PARALLEL_FRAME_SCANS = 4
 
 _T = TypeVar("_T")
 _R = TypeVar("_R")
 
 
-def _map_parallel(items: list[_T], fn: Callable[[_T], _R]) -> list[_R]:
+def _map_parallel(
+    items: list[_T], fn: Callable[[_T], _R], max_workers: int | None = None
+) -> list[_R]:
     """Run fn(item) for each item on a bounded thread pool, returning
     results in the same order as `items`.
 
@@ -132,8 +189,12 @@ def _map_parallel(items: list[_T], fn: Callable[[_T], _R]) -> list[_R]:
     """
     if not items:
         return []
-    with ThreadPoolExecutor(max_workers=min(len(items), _MAX_PARALLEL_LLM_CALLS)) as pool:
-        futures = [pool.submit(fn, item) for item in items]
+    max_workers = max(1, max_workers or load_settings().llm_parallel_calls)
+    with ThreadPoolExecutor(max_workers=min(len(items), max_workers)) as pool:
+        # Each task runs in a copy of the caller's context, so per-run
+        # context (which book's warnings file to write to) follows the work
+        # onto pool threads -- plain submit() would drop it.
+        futures = [pool.submit(contextvars.copy_context().run, fn, item) for item in items]
         results: list[_R] = []
         first_exception: Exception | None = None
         for future in futures:
@@ -209,7 +270,7 @@ def _frames_node(state: BookState) -> dict:
     (_map_parallel) -- so a playlist's total frames time scaled linearly
     with its chunk count even though each chunk's scan is independent I/O
     (network stream read + local ffmpeg), not an LLM call bound by a
-    shared rate limit. Bounded on the same _MAX_PARALLEL_LLM_CALLS pool so
+    shared rate limit. Bounded by _MAX_PARALLEL_FRAME_SCANS so
     a huge playlist doesn't spawn hundreds of ffmpeg processes at once.
     """
     if load_settings().video_mode == "captions_only":
@@ -224,11 +285,32 @@ def _frames_node(state: BookState) -> dict:
 
     def process(item: tuple[str, str]) -> None:
         video_id, chunk_path = item
-        video_url = videos_by_id[video_id]["url"]
+        video = videos_by_id[video_id]
         chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
-        run_frames(video_id, video_url, chunk, state["output_dir"])
+        try:
+            run_frames(
+                video_id,
+                video["url"],
+                chunk,
+                state["output_dir"],
+                video_duration_seconds=video["duration_seconds"],
+            )
+        except Exception as error:  # noqa: BLE001 - screenshots are optional
+            # Screenshots are an extra, the notes are the book: a blocked or
+            # failed video download (e.g. YouTube's "confirm you're not a bot")
+            # used to fail the whole book after all the writing was done.
+            # Nothing is saved for this chunk, so a later --resume/retry tries
+            # its screenshots again.
+            logging.getLogger("app.nodes.frames").warning(
+                "no screenshots for %s chunk %s: %s", video_id, chunk["chunk_index"], error
+            )
 
-    _map_parallel(chunk_items, process)
+    try:
+        _map_parallel(chunk_items, process, max_workers=_MAX_PARALLEL_FRAME_SCANS)
+    finally:
+        # VIDEO_MODE=download's temporary per-video copies -- never kept
+        # past this node (root AGENTS.md: no stored video files).
+        shutil.rmtree(Path(state["output_dir"]) / "work" / "frames" / "_video", ignore_errors=True)
     return {}
 
 
@@ -239,12 +321,29 @@ def _topics_node(state: BookState) -> dict:
         for chunk_path in video_chunk_paths
     ]
 
-    def process(chunk_path: str) -> None:
+    def process(chunk_path: str | None) -> None:
+        if chunk_path is None:
+            # The book's genre (lecture / podcast / comedy) is one more short
+            # LLM call; it runs in the same pool so it costs no extra time.
+            run_cached(
+                genre_json_path(state["output_dir"]),
+                lambda: run_genre(state["videos"], state["output_dir"]),
+            )
+            return
         chunk = json.loads(Path(chunk_path).read_text(encoding="utf-8"))
         output_path = topics_output_path(chunk, state["output_dir"])
-        run_cached(output_path, lambda: run_topics(chunk_path, state["output_dir"]))
+        # A creator's own YouTube chapters are the speaker's real structure:
+        # use them as this chunk's topics and skip the LLM call.
+        video = next((v for v in state["videos"] if v["video_id"] == chunk["video_id"]), {})
+        from_chapters = topics_from_youtube_chapters(chunk, video.get("chapters") or [])
+        run_cached(
+            output_path,
+            lambda: write_topics(chunk, from_chapters, state["output_dir"])
+            if from_chapters
+            else run_topics(chunk_path, state["output_dir"]),
+        )
 
-    _map_parallel(all_chunk_paths, process)
+    _map_parallel([None, *all_chunk_paths], process)
     return {}
 
 
@@ -266,39 +365,47 @@ def _outline_node(state: BookState) -> dict:
 
 def _run_book_pass(chapters: list[dict], output_dir: str) -> dict:
     """Shared book_pass orchestration (sprints/v6 PRD.md): subject-index
-    terms per chapter, a merged glossary, and a preface -- all grounded in
-    the chapters' own final notes. `chapters` is a mode-agnostic list of
+    terms per chapter and a merged glossary -- both grounded in the
+    chapters' own final notes. `chapters` is a mode-agnostic list of
     {file_key, title, notes_path} (non-skipped chapters only). Each
     underlying LLM call is cache-skipped via run_cached, matching every
     other step's crash-safety rule.
+
+    The glossary is the only LLM work here (batched in parallel inside
+    run_glossary); each chapter's index terms are then derived from it and
+    the chapter's bold terms without an LLM call. No preface: the book is
+    topic notes, and a generic preface was a page of filler.
+
+    A comedy recap has no terms to define or look up, so it skips both (and
+    their LLM calls).
     """
-    def process(chapter: dict) -> tuple[dict, str, list]:
-        notes = Path(chapter["notes_path"]).read_text(encoding="utf-8")
-        terms_path = index_terms_json_path(chapter["file_key"], output_dir)
-        run_cached(
-            terms_path,
-            lambda: run_index_terms(chapter["file_key"], notes, output_dir),
-        )
-        index_terms = json.loads(terms_path.read_text(encoding="utf-8"))
-        return {"title": chapter["title"], "notes": notes}, chapter["file_key"], index_terms
+    if load_genre(output_dir) == "comedy":
+        return {"glossary": [], "index_terms_by_file_key": {}}
 
-    results = _map_parallel(chapters, process)
-    chapters_with_notes = [chapter_notes for chapter_notes, _, _ in results]
-    index_terms_by_file_key = {file_key: terms for _, file_key, terms in results}
-
+    chapters_with_notes = [
+        {"title": chapter["title"], "notes": Path(chapter["notes_path"]).read_text(encoding="utf-8")}
+        for chapter in chapters
+    ]
     glossary_path = glossary_json_path(output_dir)
     run_cached(glossary_path, lambda: run_glossary(chapters_with_notes, output_dir))
     glossary = json.loads(glossary_path.read_text(encoding="utf-8"))
+    glossary_terms = [entry["term"] for entry in glossary]
 
-    preface_file_path = preface_file_path_for(output_dir)
-    run_cached(
-        preface_file_path,
-        lambda: run_preface([{"title": chapter["title"]} for chapter in chapters], output_dir),
-    )
+    # Index terms need no LLM call: the glossary terms each chapter mentions
+    # plus its bold terms (app.nodes.book_pass.index_terms_from_notes).
+    index_terms_by_file_key = {}
+    for chapter, chapter_notes in zip(chapters, chapters_with_notes):
+        terms_path = index_terms_json_path(chapter["file_key"], output_dir)
+        run_cached(
+            terms_path,
+            lambda chapter=chapter, notes=chapter_notes["notes"]: run_index_terms(
+                chapter["file_key"], notes, output_dir, glossary_terms
+            ),
+        )
+        index_terms_by_file_key[chapter["file_key"]] = json.loads(terms_path.read_text(encoding="utf-8"))
 
     return {
         "glossary": glossary,
-        "preface_path": str(preface_file_path),
         "index_terms_by_file_key": index_terms_by_file_key,
     }
 
@@ -318,9 +425,7 @@ def _book_title(videos: list[dict]) -> str:
 def _render_chapters(
     chapters: list[dict],
     output_dir: str,
-    preface_path: str | None = None,
     glossary_entries: list[dict] | None = None,
-    topic_index_chapters: list[dict] | None = None,
     book_title: str = "Video2Book",
 ) -> tuple[str, str]:
     """Render + compile a mode-agnostic chapter list into book.pdf (or
@@ -333,11 +438,9 @@ def _render_chapters(
     (sprints/v4 PRD.md) is that chapter's deduped frames, appended as
     figures; hours is that chapter's approximate source-video duration,
     used only to decide the volume split; index_terms (sprints/v6 PRD.md)
-    are marked with \\index{} at their first occurrence. `preface_path`/
-    `glossary_entries`/`topic_index_chapters` (sprints/v6 PRD.md), if
-    given, assemble the book's front/back matter -- omitted entirely (as
-    they are when `book_pass` never ran, e.g. before Task 8 wired it in)
-    reproduces the exact pre-v6 chapters-only book. Everything downstream
+    are marked with \\index{} at their first occurrence. `glossary_entries`
+    (sprints/v6 PRD.md), if given, adds the glossary. No preface or topic
+    index: the book is topic notes, and both were filler pages. Everything downstream
     of this point (render_chapter, render_book, compile_chapter) doesn't
     need to know which mode built the list. Shared by both BOOK_ORDER
     modes' render nodes.
@@ -352,19 +455,11 @@ def _render_chapters(
             output_dir,
             chapter.get("screenshots"),
             chapter.get("index_terms"),
+            # Where each section is spoken: places screenshots by time and
+            # links each section to its moment on YouTube (app.nodes.align).
+            chapter_section_times(notes, chapter.get("sources", []), output_dir),
         )
         file_keys.append(chapter["file_key"])
-
-    # bool(...), not "is not None": an empty (but non-None) list means
-    # book_pass ran but zero index terms/chapters resulted (e.g. topics
-    # extraction degraded to [] for every chunk, sprints/v11 real finding)
-    # -- rendering an empty \begin{enumerate}...\end{enumerate} is a real
-    # LaTeX fatal error ("Something's wrong--perhaps a missing \item"), so
-    # this must match has_glossary's already-correct bool(glossary_entries)
-    # pattern just below, not just "was a list object passed at all."
-    include_topic_index = bool(topic_index_chapters)
-    if include_topic_index:
-        render_topic_index(topic_index_chapters, output_dir)
 
     total_hours = sum(chapter.get("hours", 0.0) for chapter in chapters)
     volume_hours = load_settings().volume_hours
@@ -373,14 +468,14 @@ def _render_chapters(
         main_tex_path = render_book(
             file_keys,
             output_dir,
-            preface_path=preface_path,
             glossary_entries=glossary_entries,
-            include_topic_index=include_topic_index,
             book_title=book_title,
+            book_kind=BOOK_KINDS[load_genre(output_dir)],
         )
         pdf_path = compile_chapter(main_tex_path)
         book_pdf_path = Path(output_dir) / "book.pdf"
         shutil.copyfile(pdf_path, book_pdf_path)
+        _write_exports(chapters, output_dir, book_title)
         return str(main_tex_path), str(book_pdf_path)
 
     chapters_with_hours = [
@@ -390,10 +485,9 @@ def _render_chapters(
     volume_tex_paths = render_book_volumes(
         chapter_groups,
         output_dir,
-        preface_path=preface_path,
         glossary_entries=glossary_entries,
-        include_topic_index=include_topic_index,
         book_title=book_title,
+        book_kind=BOOK_KINDS[load_genre(output_dir)],
     )
 
     last_pdf_path = None
@@ -403,7 +497,23 @@ def _render_chapters(
         shutil.copyfile(pdf_path, volume_pdf_path)
         last_pdf_path = volume_pdf_path
 
+    _write_exports(chapters, output_dir, book_title)
     return str(volume_tex_paths[-1]), str(last_pdf_path)
+
+
+def _write_exports(chapters: list[dict], output_dir: str, book_title: str) -> None:
+    """book.md and book.epub next to the PDF (app.export). Optional extras: a
+    failure is logged as a warning and never fails the book."""
+    try:
+        exported = [
+            {"title": chapter["title"], "notes": Path(chapter["notes_path"]).read_text(encoding="utf-8")}
+            for chapter in chapters
+        ]
+        book_kind = BOOK_KINDS[load_genre(output_dir)]
+        write_markdown_book(exported, Path(output_dir) / "book.md", book_title)
+        write_epub(exported, Path(output_dir) / "book.epub", book_title, book_kind)
+    except Exception as error:  # noqa: BLE001 - extra formats must not fail the PDF
+        logging.getLogger("app.nodes.export").warning("could not write book.md/book.epub: %s", error)
 
 
 def _book_pass_node(state: BookState) -> dict:
@@ -432,6 +542,10 @@ def _render_node(state: BookState) -> dict:
             "notes_path": state["notes_paths"][chapter["video_id"]],
             "screenshots": load_video_screenshots(chapter["video_id"], state["output_dir"]),
             "hours": videos_by_id[chapter["video_id"]]["duration_seconds"] / 3600,
+            "sources": [
+                {"video_id": chapter["video_id"], "chunk_index": index}
+                for index in range(len(state["chunk_paths"].get(chapter["video_id"], [])))
+            ],
             "index_terms": index_terms_by_file_key.get(chapter["video_id"], []),
         }
         for chapter in state["chapters"]
@@ -440,11 +554,7 @@ def _render_node(state: BookState) -> dict:
     tex_path, pdf_path = _render_chapters(
         chapters,
         state["output_dir"],
-        preface_path=book_pass.get("preface_path"),
         glossary_entries=book_pass.get("glossary"),
-        topic_index_chapters=(
-            [{"title": chapter["title"]} for chapter in chapters] if book_pass else None
-        ),
         book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}
@@ -454,7 +564,18 @@ def _render_node(state: BookState) -> dict:
 
 
 def _plan_node(state: BookState) -> dict:
-    run_plan_topics(state["output_dir"])
+    # Cached: the render phase re-runs the graph from START, and without
+    # this the plan LLM call ran again -- wasting time and, worse, able to
+    # produce a different plan than the outline the user already reviewed.
+    output_dir = state["output_dir"]
+
+    def plan() -> None:
+        # One chunk in the whole book (a single short video): nothing to
+        # merge, so skip the LLM merge call and write one chapter.
+        if run_single_chunk_plan(output_dir, state["videos"][0]["title"]) is None:
+            run_plan_topics(output_dir)
+
+    run_cached(plan_json_path(output_dir), plan)
     return {}
 
 
@@ -491,36 +612,65 @@ def _book_pass_topic_node(state: BookState) -> dict:
     return {"book_pass": _run_book_pass(chapters, state["output_dir"])}
 
 
+def _chunk_key(source: dict) -> tuple[str, int]:
+    return source["video_id"], source["chunk_index"]
+
+
+def _topic_chapter_hours_and_fresh_sources(
+    chapters: list[dict], chunk_minutes: int
+) -> list[tuple[float, list[dict]]]:
+    """Per chapter: (hours, sources whose screenshots it should show).
+
+    In topic mode one source chunk can feed several chapters (a 30-minute
+    chunk usually covers a few topics). Counting the whole chunk for every
+    chapter made a 13-hour video look like 20-40 hours -- which wrongly
+    split it into volumes (backend/ stores one PDF per book, so a second
+    volume would never be uploaded) -- and repeated the chunk's screenshots
+    in every chapter that used it. Instead each chunk's time is shared
+    evenly between the chapters that use it (the total is the real
+    duration), and its screenshots go only to the first chapter that uses it.
+    """
+    # A chapter listing the same chunk twice still uses it once.
+    sources_by_chapter = [
+        list({_chunk_key(source): source for source in chapter.get("sources", [])}.values())
+        for chapter in chapters
+    ]
+    users = Counter(_chunk_key(source) for sources in sources_by_chapter for source in sources)
+    chunk_hours = chunk_minutes / 60
+    shown: set[tuple[str, int]] = set()
+    result = []
+    for sources in sources_by_chapter:
+        hours = sum(chunk_hours / users[_chunk_key(source)] for source in sources)
+        fresh = [source for source in sources if _chunk_key(source) not in shown]
+        shown.update(_chunk_key(source) for source in sources)
+        result.append((hours, fresh))
+    return result
+
+
 def _render_topic_node(state: BookState) -> dict:
     chunk_minutes = load_settings().chunk_minutes
     book_pass = state.get("book_pass", {})
     index_terms_by_file_key = book_pass.get("index_terms_by_file_key", {})
+
+    active = [chapter for chapter in state["chapters"] if not chapter["skip"]]
+    hours_and_sources = _topic_chapter_hours_and_fresh_sources(active, chunk_minutes)
 
     chapters = [
         {
             "file_key": chapter["slug"],
             "title": chapter["title"],
             "notes_path": state["notes_paths"][chapter["id"]],
-            "screenshots": load_screenshots_for_sources(
-                chapter.get("sources", []), state["output_dir"]
-            ),
-            # No single source video's duration applies to a merged topic;
-            # approximate from its source chunk count (each ~chunk_minutes
-            # long) -- good enough to size the volume split, not exact.
-            "hours": len(chapter.get("sources", [])) * chunk_minutes / 60,
+            "screenshots": load_screenshots_for_sources(fresh_sources, state["output_dir"]),
+            "sources": chapter.get("sources", []),
+            "hours": hours,
             "index_terms": index_terms_by_file_key.get(chapter["slug"], []),
         }
-        for chapter in state["chapters"]
-        if not chapter["skip"]
+        for chapter, (hours, fresh_sources) in zip(active, hours_and_sources)
     ]
     tex_path, pdf_path = _render_chapters(
         chapters,
         state["output_dir"],
-        preface_path=book_pass.get("preface_path"),
         glossary_entries=book_pass.get("glossary"),
-        topic_index_chapters=(
-            [{"title": chapter["title"]} for chapter in chapters] if book_pass else None
-        ),
         book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}
@@ -541,15 +691,15 @@ def build_video_graph(checkpointer=None):
     write/outline/book_pass from starting concurrently.
     """
     builder = StateGraph(BookState)
-    builder.add_node("fetch", _fetch_node)
-    builder.add_node("check_budget", _check_budget_node)
-    builder.add_node("chunk", _chunk_node)
-    builder.add_node("frames", _frames_node)
-    builder.add_node("topics", _topics_node)
-    builder.add_node("write", _write_node)
-    builder.add_node("outline", _outline_node)
-    builder.add_node("book_pass", _book_pass_node)
-    builder.add_node("render", _render_node)
+    builder.add_node("fetch", _timed("fetch", _fetch_node))
+    builder.add_node("check_budget", _timed("check_budget", _check_budget_node))
+    builder.add_node("chunk", _timed("chunk", _chunk_node))
+    builder.add_node("frames", _timed("frames", _frames_node))
+    builder.add_node("topics", _timed("topics", _topics_node))
+    builder.add_node("write", _timed("write", _write_node))
+    builder.add_node("outline", _timed("outline", _outline_node))
+    builder.add_node("book_pass", _timed("book_pass", _book_pass_node))
+    builder.add_node("render", _timed("render", _render_node))
 
     builder.add_edge(START, "fetch")
     builder.add_edge("fetch", "check_budget")
@@ -575,12 +725,12 @@ def build_video_plan_graph(checkpointer=None):
     cache-skipped, so the run continues on to render/compile.
     """
     builder = StateGraph(BookState)
-    builder.add_node("fetch", _fetch_node)
-    builder.add_node("check_budget", _check_budget_node)
-    builder.add_node("chunk", _chunk_node)
-    builder.add_node("topics", _topics_node)
-    builder.add_node("write", _write_node)
-    builder.add_node("outline", _outline_node)
+    builder.add_node("fetch", _timed("fetch", _fetch_node))
+    builder.add_node("check_budget", _timed("check_budget", _check_budget_node))
+    builder.add_node("chunk", _timed("chunk", _chunk_node))
+    builder.add_node("topics", _timed("topics", _topics_node))
+    builder.add_node("write", _timed("write", _write_node))
+    builder.add_node("outline", _timed("outline", _outline_node))
 
     builder.add_edge(START, "fetch")
     builder.add_edge("fetch", "check_budget")
@@ -603,17 +753,17 @@ def build_topic_graph(checkpointer=None):
     screenshots from disk) needs frames to have finished.
     """
     builder = StateGraph(BookState)
-    builder.add_node("fetch", _fetch_node)
-    builder.add_node("check_budget", _check_budget_node)
-    builder.add_node("chunk", _chunk_node)
-    builder.add_node("frames", _frames_node)
-    builder.add_node("topics", _topics_node)
-    builder.add_node("plan", _plan_node)
-    builder.add_node("order", _order_node)
-    builder.add_node("outline", _topic_outline_node)
-    builder.add_node("write", _write_topic_node)
-    builder.add_node("book_pass", _book_pass_topic_node)
-    builder.add_node("render", _render_topic_node)
+    builder.add_node("fetch", _timed("fetch", _fetch_node))
+    builder.add_node("check_budget", _timed("check_budget", _check_budget_node))
+    builder.add_node("chunk", _timed("chunk", _chunk_node))
+    builder.add_node("frames", _timed("frames", _frames_node))
+    builder.add_node("topics", _timed("topics", _topics_node))
+    builder.add_node("plan", _timed("plan", _plan_node))
+    builder.add_node("order", _timed("order", _order_node))
+    builder.add_node("outline", _timed("outline", _topic_outline_node))
+    builder.add_node("write", _timed("write", _write_topic_node))
+    builder.add_node("book_pass", _timed("book_pass", _book_pass_topic_node))
+    builder.add_node("render", _timed("render", _render_topic_node))
 
     builder.add_edge(START, "fetch")
     builder.add_edge("fetch", "check_budget")
@@ -634,13 +784,13 @@ def build_topic_graph(checkpointer=None):
 def build_topic_plan_graph(checkpointer=None):
     """BOOK_ORDER=topic, --plan-only: stops before write/render/compile."""
     builder = StateGraph(BookState)
-    builder.add_node("fetch", _fetch_node)
-    builder.add_node("check_budget", _check_budget_node)
-    builder.add_node("chunk", _chunk_node)
-    builder.add_node("topics", _topics_node)
-    builder.add_node("plan", _plan_node)
-    builder.add_node("order", _order_node)
-    builder.add_node("outline", _topic_outline_node)
+    builder.add_node("fetch", _timed("fetch", _fetch_node))
+    builder.add_node("check_budget", _timed("check_budget", _check_budget_node))
+    builder.add_node("chunk", _timed("chunk", _chunk_node))
+    builder.add_node("topics", _timed("topics", _topics_node))
+    builder.add_node("plan", _timed("plan", _plan_node))
+    builder.add_node("order", _timed("order", _order_node))
+    builder.add_node("outline", _timed("outline", _topic_outline_node))
 
     builder.add_edge(START, "fetch")
     builder.add_edge("fetch", "check_budget")
@@ -843,6 +993,99 @@ def _checkpoint_db_path(output_dir: Path) -> Path:
     return output_dir / "graph_state.sqlite"
 
 
+def warnings_path(output_dir: str | Path) -> Path:
+    """The deterministic warnings.jsonl path for a book (sprints/v11:
+    surfacing non-fatal degradations). Exposed so callers (e.g. a test, or
+    a future cache-aware node) can check it without reconstructing the
+    path themselves.
+    """
+    return Path(output_dir) / "warnings.jsonl"
+
+
+# Which book's warnings.jsonl the current run writes to. A context
+# variable, not a per-run handler: with several books running concurrently
+# in one worker process, a handler attached per run to the shared
+# "app.nodes" logger would copy every book's warnings into every other
+# running book's file.
+_current_warnings_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "v2b_current_warnings_path", default=None
+)
+_warnings_handler_lock = threading.Lock()
+_warnings_handler_installed = False
+
+
+class _WarningFileHandler(logging.Handler):
+    """Appends each WARNING+ log record to the current run's warnings.jsonl
+    the instant it's emitted -- not collected in memory and written once at
+    the end, so a warning survives a crash the same way every other step's
+    output does (root AGENTS.md: "every step saves to disk"). Records
+    logged outside any run (no path in context) are ignored.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        path = _current_warnings_path.get()
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+
+
+def _ensure_warnings_handler() -> None:
+    global _warnings_handler_installed
+    with _warnings_handler_lock:
+        if not _warnings_handler_installed:
+            logging.getLogger("app.nodes").addHandler(_WarningFileHandler())
+            _warnings_handler_installed = True
+
+
+@contextmanager
+def _collect_warnings(output_dir: str | Path) -> Iterator[None]:
+    """Captures every WARNING+ record logged by app.nodes.* (e.g. "topics
+    extraction ... produced no usable JSON array after a retry;
+    continuing with an empty topics list") during one graph run, to
+    <output_dir>/warnings.jsonl -- these already-logged degradations
+    (topics.py, plan.py, book_pass.py, write.py, verify.py, frames.py all
+    log-and-continue rather than raise) previously only ever reached
+    stdout/worker logs, with no way for a caller like backend/'s /events
+    stream to know a book's output had quietly degraded. Attaching to the
+    "app.nodes" logger (the common parent of every node module's own
+    logging.getLogger(__name__)) via normal log propagation captures all
+    of them in one place without touching each node file.
+    """
+    _ensure_warnings_handler()
+    token = _current_warnings_path.set(warnings_path(output_dir))
+    try:
+        yield
+    finally:
+        _current_warnings_path.reset(token)
+
+
+def get_warnings(output_dir: str | Path) -> list[dict]:
+    """Read-only: every non-fatal degradation warning logged so far for
+    this book (sprints/v11), without invoking anything -- same disk-
+    artifact-read pattern as get_chapter_progress. Returns [] if the run
+    hasn't logged any yet, or hasn't started (not an error).
+    """
+    path = warnings_path(output_dir)
+    if not path.exists():
+        return []
+    warnings: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            warnings.append(json.loads(line))
+    return warnings
+
+
 def run_book(
     url: str, output_dir: str | Path, force: bool = False, checkpointer=None
 ) -> Path:
@@ -863,17 +1106,19 @@ def run_book(
     if checkpointer is not None:
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(
-            {"url": url, "output_dir": str(output_dir), "force": force}, config=config
-        )
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(
+                {"url": url, "output_dir": str(output_dir), "force": force}, config=config
+            )
         return Path(final_state["pdf_path"])
 
     with SqliteSaver.from_conn_string(str(_checkpoint_db_path(output_dir))) as sqlite_checkpointer:
         graph = build_graph(checkpointer=sqlite_checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(
-            {"url": url, "output_dir": str(output_dir), "force": force}, config=config
-        )
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(
+                {"url": url, "output_dir": str(output_dir), "force": force}, config=config
+            )
 
     return Path(final_state["pdf_path"])
 
@@ -903,17 +1148,19 @@ def run_plan(
     if checkpointer is not None:
         graph = build_plan_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(
-            {"url": url, "output_dir": str(output_dir), "force": force}, config=config
-        )
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(
+                {"url": url, "output_dir": str(output_dir), "force": force}, config=config
+            )
         return final_state["videos"], final_state["chapters"]
 
     with SqliteSaver.from_conn_string(str(_checkpoint_db_path(output_dir))) as sqlite_checkpointer:
         graph = build_plan_graph(checkpointer=sqlite_checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(
-            {"url": url, "output_dir": str(output_dir), "force": force}, config=config
-        )
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(
+                {"url": url, "output_dir": str(output_dir), "force": force}, config=config
+            )
 
     return final_state["videos"], final_state["chapters"]
 
@@ -932,7 +1179,8 @@ def resume_book(output_dir: str | Path, checkpointer=None) -> Path:
     if checkpointer is not None:
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(None, config=config)
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(None, config=config)
         return Path(final_state["pdf_path"])
 
     db_path = _checkpoint_db_path(output_dir)
@@ -942,6 +1190,7 @@ def resume_book(output_dir: str | Path, checkpointer=None) -> Path:
     with SqliteSaver.from_conn_string(str(db_path)) as sqlite_checkpointer:
         graph = build_graph(checkpointer=sqlite_checkpointer)
         config = {"configurable": {"thread_id": str(output_dir)}}
-        final_state = graph.invoke(None, config=config)
+        with _collect_warnings(output_dir):
+            final_state = graph.invoke(None, config=config)
 
     return Path(final_state["pdf_path"])

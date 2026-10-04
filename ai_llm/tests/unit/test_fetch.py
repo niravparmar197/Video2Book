@@ -125,3 +125,47 @@ def test_run_fetch_playlist_single_video_returns_list_of_one(tmp_path, monkeypat
     assert len(videos) == 1
     assert videos[0].video_id == "aircAruvnKk"
     assert videos[0].playlist_index == 1
+
+
+def test_run_fetch_playlist_reuses_captions_already_on_disk_instead_of_refetching(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(fetch_node, "list_playlist_videos", _fake_playlist_entries)
+    calls = []
+
+    def counting_fetch(url, captions_dir):
+        calls.append(url)
+        return _fake_fetch_video_by_url(url, captions_dir)
+
+    monkeypatch.setattr(fetch_node, "fetch_video", counting_fetch)
+    output_dir = tmp_path / "output" / "some-book"
+
+    first = fetch_node.run_fetch_playlist(TEST_PLAYLIST_URL, output_dir)  # plan phase
+    second = fetch_node.run_fetch_playlist(TEST_PLAYLIST_URL, output_dir)  # render / resume
+
+    assert len(calls) == 2  # one fetch per video, only on the first pass
+    assert [v.video_id for v in second] == [v.video_id for v in first]
+    assert [v.title for v in second] == [v.title for v in first]
+    assert [v.playlist_index for v in second] == [1, 2]
+
+
+def test_run_fetch_playlist_refetches_a_video_whose_captions_file_is_gone(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_node, "list_playlist_videos", _fake_playlist_entries)
+    calls = []
+
+    def counting_fetch(url, captions_dir):
+        calls.append(url)
+        return _fake_fetch_video_by_url(url, captions_dir)
+
+    monkeypatch.setattr(fetch_node, "fetch_video", counting_fetch)
+    output_dir = tmp_path / "output" / "some-book"
+    fetch_node.run_fetch_playlist(TEST_PLAYLIST_URL, output_dir)
+    for vtt in (output_dir / "work" / "captions").glob("*.vtt"):
+        vtt.unlink()
+    Path(json.loads((output_dir / "videos.json").read_text(encoding="utf-8"))[0]["captions_path"]).unlink(
+        missing_ok=True
+    )
+
+    fetch_node.run_fetch_playlist(TEST_PLAYLIST_URL, output_dir)
+
+    assert len(calls) == 4  # both videos fetched again

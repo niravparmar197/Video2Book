@@ -12,7 +12,7 @@ from api.config import settings
 # queue a real dev/prod worker is consuming from. Found in production:
 # 1276 stray test-fixture jobs (fake URLs like "https://youtu.be/1",
 # "abc123") backed up a real book behind them, since the worker's
-# concurrency is 1.
+# concurrency was 1 (now WORKER_CONCURRENCY, default 2).
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "run_book")
 
 DEFAULT_JOB_OPTIONS = {

@@ -1,9 +1,22 @@
+import uuid
 from types import SimpleNamespace
 
+import pytest
 import redis
 
 from api import heartbeat
 from api.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _private_heartbeat_key(monkeypatch):
+    """A key of our own: a real worker running on this machine writes the
+    shared "worker:heartbeat" key every few seconds, which made these tests
+    fail whenever the dev worker was up (and would clear its heartbeat)."""
+    key = f"test:worker:heartbeat:{uuid.uuid4().hex}"
+    monkeypatch.setattr(heartbeat, "HEARTBEAT_KEY", key)
+    yield
+    redis.Redis.from_url(settings.redis_url).delete(key)
 
 
 def _redis_client() -> redis.Redis:

@@ -114,7 +114,7 @@ def test_run_chunk_writes_one_json_file_per_chunk(tmp_path):
 
 def test_run_chunk_90_minute_transcript_produces_3_files(tmp_path):
     lines = ["WEBVTT", ""]
-    for minute in (0, 35, 65):
+    for minute in (0, 35, 80):
         start = f"{minute // 60:02d}:{minute % 60:02d}:00.000"
         end = f"{minute // 60:02d}:{minute % 60:02d}:01.000"
         lines.append(f"{start} --> {end}")
@@ -129,3 +129,69 @@ def test_run_chunk_90_minute_transcript_produces_3_files(tmp_path):
     assert len(written) == 3
     for path in written:
         assert path.exists()
+
+
+def _cues_every_minute(total_minutes):
+    return [
+        Cue(start_seconds=minute * 60, end_seconds=minute * 60 + 59, text=f"line {minute}")
+        for minute in range(total_minutes)
+    ]
+
+
+def test_a_short_tail_is_merged_into_the_previous_chunk():
+    # 34 minutes of captions at 30-minute chunks: the 4-minute tail (< 6 min) folds in.
+    chunks = chunk_cues(_cues_every_minute(34), chunk_minutes=30)
+
+    assert len(chunks) == 1
+    assert chunks[0].chunk_index == 0
+    assert chunks[0].end_seconds == 33 * 60 + 59
+    assert "line 33" in chunks[0].text
+
+
+def test_a_substantial_tail_stays_its_own_chunk():
+    chunks = chunk_cues(_cues_every_minute(38), chunk_minutes=30)  # 8-minute tail
+
+    assert [chunk.chunk_index for chunk in chunks] == [0, 1]
+
+
+def test_a_13_hour_video_keeps_26_chunks_when_its_tail_is_substantial_and_25_when_short():
+    thirteen_hours = _cues_every_minute(13 * 60)
+    assert len(chunk_cues(thirteen_hours, chunk_minutes=30)) == 26
+
+    with_short_tail = _cues_every_minute(13 * 60 + 3)  # 3-minute tail -> merged
+    assert len(chunk_cues(with_short_tail, chunk_minutes=30)) == 26
+
+
+_ROLLING_YOUTUBE_VTT = """WEBVTT
+Kind: captions
+Language: en
+
+00:00:07.559 --> 00:00:10.030 align:start position:0%
+ 
+matter<00:00:08.559><c> well</c><00:00:08.760><c> since</c>
+
+00:00:10.030 --> 00:00:10.040 align:start position:0%
+matter well since
+ 
+
+00:00:10.040 --> 00:00:13.589 align:start position:0%
+matter well since
+I'd<00:00:10.200><c> say</c><00:00:10.599><c> no</c>
+
+00:00:13.589 --> 00:00:13.599 align:start position:0%
+I'd say no
+ 
+
+00:00:13.599 --> 00:00:17.950 align:start position:0%
+I'd say no
+most<00:00:13.920><c> important</c>
+"""
+
+
+def test_rolling_youtube_auto_captions_keep_each_phrase_once():
+    # Each cue repeats the previous line; whole-cue comparison sent every
+    # phrase to the LLM three times (a real 12-minute clip: 32,731 chars
+    # instead of 10,975).
+    chunks = chunk_cues(parse_vtt(_ROLLING_YOUTUBE_VTT), chunk_minutes=30)
+
+    assert chunks[0].text == "matter well since I'd say no most important"

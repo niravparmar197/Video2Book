@@ -94,3 +94,39 @@ test('hands off to the done state when the stream reports terminal', async ({ pa
   await expect(page.getByTestId('book-detail-download')).toBeVisible();
   await page.screenshot({ path: 'tests/screenshots/task8-02-done-after-progress.png' });
 });
+
+test('shows the detected book type and how long each finished step took', async ({ page }) => {
+  await installApiMocks(page);
+  await loginAs(page);
+
+  const bookId = 'book-kind1';
+  const queuedBook = { id: bookId, status: 'queued', pdf_path: null, error_message: null };
+  await mockJson(page, 'POST', `${API_BASE}/books/youtube`, 201, queuedBook);
+  await mockJson(page, 'GET', `${API_BASE}/books/${bookId}`, 200, queuedBook);
+
+  const event = {
+    current_node: 'write',
+    completed_nodes: ['fetch', 'topics'],
+    chapters: [],
+    percent: 45,
+    elapsed_seconds: 80,
+    warnings: [],
+    book_kind: 'Podcast Notes',
+    step_seconds: { fetch: 6.5, topics: 22.1 },
+  };
+  await page.route(`${API_BASE}/books/${bookId}/events`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: `event: progress` + String.fromCharCode(10) + `data: ${JSON.stringify(event)}` + String.fromCharCode(10, 10),
+    })
+  );
+
+  await page.getByTestId('new-book-url-input').fill('https://www.youtube.com/watch?v=pod1');
+  await page.getByTestId('new-book-submit').click();
+
+  await expect(page.getByTestId('progress-book-kind')).toHaveText('Podcast Notes');
+  await expect(page.getByTestId('progress-step-seconds-fetch')).toContainText('7s');
+  await expect(page.getByTestId('progress-step-seconds-topics')).toContainText('22s');
+  await page.screenshot({ path: 'tests/screenshots/progress-book-kind-and-step-times.png' });
+});

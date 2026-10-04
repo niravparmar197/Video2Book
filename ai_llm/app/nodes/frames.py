@@ -1,4 +1,8 @@
-"""Frames node: stream-mode scene detection + screenshots (VIDEO_MODE=stream).
+"""Frames node: scene detection + screenshots (VIDEO_MODE=stream or download).
+
+VIDEO_MODE=download downloads each video once (480p, video-only), scans its
+chunks locally, and deletes the copy afterward -- ~8x faster than stream
+mode on a real video, since ffmpeg's direct stream read gets throttled.
 
 One screenshot per scene change, never on a timer (root AGENTS.md: "A timer
 gives ~720 near-duplicate images/hour"). ffmpeg scans a chunk's time range
@@ -14,13 +18,16 @@ import logging
 import re
 import shutil
 import subprocess  # nosec B404 - only ever called with a fixed arg list, never shell=True
+import threading
 from pathlib import Path
 from typing import Callable
 
 import imagehash
 from PIL import Image, ImageFilter, ImageStat
 
+from app.config import load_settings
 from app.youtube import download_chunk_video as _download_chunk_video
+from app.youtube import download_video_for_frames as _download_video_for_frames
 from app.youtube import get_stream_url as _get_stream_url
 
 SCENE_THRESHOLD = 0.4
@@ -91,6 +98,12 @@ def detect_scenes(
     result = runner(
         [
             "ffmpeg",
+            # Decode keyframes only: measured 4.7x faster (425x vs 90x real
+            # time) on a real 27-minute lecture. It finds fewer scene changes
+            # (48 vs 150 after dedupe), but the book keeps at most
+            # MAX_SCREENSHOTS_PER_CHUNK (12) per chunk, so nothing is lost.
+            "-skip_frame",
+            "nokey",
             "-ss",
             str(start_seconds),
             "-i",
@@ -186,6 +199,63 @@ def _edge_variance(grayscale: Image.Image, margin: int = _BLUR_CROP_MARGIN) -> f
     return ImageStat.Stat(edges).var[0]
 
 
+_video_locks: dict[str, threading.Lock] = {}
+_video_locks_guard = threading.Lock()
+
+
+def local_video_path(video_id: str, output_dir: str | Path) -> Path:
+    """Where VIDEO_MODE=download keeps a video's temporary 480p copy while
+    its chunks are scanned. graph.py's frames node deletes this whole
+    directory once every chunk is done."""
+    return Path(output_dir) / "work" / "frames" / "_video" / f"{video_id}.mp4"
+
+
+def _ensure_local_video(
+    video_id: str,
+    video_url: str,
+    output_dir: str | Path,
+    download_video: Callable[[str, Path], Path] = _download_video_for_frames,
+) -> Path:
+    """Download a video once even when several of its chunks are scanned
+    concurrently (graph.py runs chunks on a thread pool)."""
+    path = local_video_path(video_id, output_dir)
+    # Keyed by path, not video_id: two books of the same video download into
+    # their own output dirs and shouldn't block on each other.
+    with _video_locks_guard:
+        lock = _video_locks.setdefault(str(path), threading.Lock())
+    with lock:
+        if not path.exists():
+            download_video(video_url, path)
+        return path
+
+
+def detect_scenes_downloaded(
+    video_id: str,
+    video_url: str,
+    start_seconds: float,
+    end_seconds: float,
+    output_dir: str | Path,
+    scene_dir: str | Path,
+    download_video: Callable[[str, Path], Path] = _download_video_for_frames,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> list[dict]:
+    """VIDEO_MODE=download: scan [start, end) of a locally downloaded copy.
+    ffmpeg's -ss seek on a local file is fast, and the stream throttling
+    that makes stream mode slow doesn't apply. Falls back to stream mode
+    if the download itself fails, so a bad download never loses a chunk's
+    screenshots."""
+    try:
+        local = _ensure_local_video(video_id, video_url, output_dir, download_video)
+    except Exception as error:  # noqa: BLE001 - degrade to stream mode, never lose the chunk
+        logger.warning(
+            "download for scene detection failed for %s (%s); falling back to stream mode",
+            video_url,
+            error,
+        )
+        return detect_scenes_with_fallback(video_url, start_seconds, end_seconds, scene_dir)
+    return detect_scenes(str(local), start_seconds, end_seconds, scene_dir, runner=runner)
+
+
 def dedupe_frames(
     frames: list[dict],
     hamming_threshold: int = HAMMING_DEDUPE_THRESHOLD,
@@ -224,6 +294,23 @@ def dedupe_frames(
     return kept
 
 
+def limit_frames(frames: list[dict], max_frames: int) -> list[dict]:
+    """Keep at most `max_frames` screenshots, evenly spread across the chunk
+    (first and last included), so the book still covers the whole video.
+
+    A talking-head lecture has a "scene change" every few seconds: one real
+    27-minute video kept 153 distinct frames after dedupe -- a 150-figure
+    chapter that crashed LaTeX, bloated the PDF, and slowed rendering. 0 = no
+    limit.
+    """
+    if max_frames <= 0 or len(frames) <= max_frames:
+        return frames
+    if max_frames == 1:
+        return [frames[0]]
+    step = (len(frames) - 1) / (max_frames - 1)
+    return [frames[round(index * step)] for index in range(max_frames)]
+
+
 def frames_output_path(video_id: str, chunk_index: int, output_dir: str | Path) -> Path:
     """The deterministic work/frames/<video_id>_<chunk_index>.json path for a chunk.
 
@@ -233,7 +320,55 @@ def frames_output_path(video_id: str, chunk_index: int, output_dir: str | Path) 
     return Path(output_dir) / "work" / "frames" / f"{video_id}_{chunk_index:03d}.json"
 
 
-def run_frames(video_id: str, video_url: str, chunk: dict, output_dir: str | Path) -> Path:
+# Worst-case size of the temporary 480p video-only copy (measured ~50MB/hour
+# on a talking-head lecture; busier video is bigger), and the free-space
+# safety factor required on top of it.
+_DOWNLOAD_GB_PER_HOUR = 0.3
+_DISK_SAFETY_FACTOR = 3
+
+
+def _enough_disk_for_download(video_duration_seconds: float, output_dir: str | Path) -> bool:
+    path = Path(output_dir).resolve()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    needed_gb = max(
+        1.0, video_duration_seconds / 3600 * _DOWNLOAD_GB_PER_HOUR * _DISK_SAFETY_FACTOR
+    )
+    free_gb = shutil.disk_usage(path).free / 1e9
+    if free_gb < needed_gb:
+        logger.warning(
+            "only %.1fGB free (need ~%.1fGB) for a temporary download; "
+            "streaming screenshots instead",
+            free_gb,
+            needed_gb,
+        )
+    return free_gb >= needed_gb
+
+
+def _should_download(
+    video_duration_seconds: float | None, output_dir: str | Path | None = None
+) -> bool:
+    """Download (fast) rather than stream (throttled) when VIDEO_MODE says so,
+    or when VIDEO_MODE=stream and the video is within
+    FRAMES_DOWNLOAD_MAX_MINUTES (the default covers a ~13-hour video) and the
+    disk has room for the temporary copy. Beyond that it keeps streaming, so
+    a 30-hour playlist never needs tens of GB."""
+    settings = load_settings()
+    if settings.video_mode == "download":
+        return True
+    max_seconds = settings.frames_download_max_minutes * 60
+    if not video_duration_seconds or video_duration_seconds > max_seconds:
+        return False
+    return output_dir is None or _enough_disk_for_download(video_duration_seconds, output_dir)
+
+
+def run_frames(
+    video_id: str,
+    video_url: str,
+    chunk: dict,
+    output_dir: str | Path,
+    video_duration_seconds: float | None = None,
+) -> Path:
     """Detect + dedupe one chunk's screenshots, save kept images under
     assets/<video_id>/, and write work/frames/<video_id>_<chunk>.json.
 
@@ -250,10 +385,20 @@ def run_frames(video_id: str, video_url: str, chunk: dict, output_dir: str | Pat
     scene_dir = (
         output_dir / "work" / "frames" / "_scenes" / f"{video_id}_{chunk['chunk_index']:03d}"
     )
-    detected = detect_scenes_with_fallback(
-        video_url, chunk["start_seconds"], chunk["end_seconds"], scene_dir
-    )
-    kept = dedupe_frames(detected)
+    if _should_download(video_duration_seconds, output_dir):
+        detected = detect_scenes_downloaded(
+            video_id,
+            video_url,
+            chunk["start_seconds"],
+            chunk["end_seconds"],
+            output_dir,
+            scene_dir,
+        )
+    else:
+        detected = detect_scenes_with_fallback(
+            video_url, chunk["start_seconds"], chunk["end_seconds"], scene_dir
+        )
+    kept = limit_frames(dedupe_frames(detected), load_settings().max_screenshots_per_chunk)
 
     assets_dir = output_dir / "assets" / video_id
     assets_dir.mkdir(parents=True, exist_ok=True)
@@ -290,7 +435,7 @@ def load_video_screenshots(video_id: str, output_dir: str | Path) -> list[dict]:
     screenshots: list[dict] = []
     for frames_path in sorted(frames_dir.glob(f"{video_id}_*.json")):
         payload = json.loads(frames_path.read_text(encoding="utf-8"))
-        screenshots.extend(payload["frames"])
+        screenshots.extend(limit_frames(payload["frames"], load_settings().max_screenshots_per_chunk))
     return screenshots
 
 
@@ -309,5 +454,5 @@ def load_screenshots_for_sources(sources: list[dict], output_dir: str | Path) ->
         if not frames_path.exists():
             continue
         payload = json.loads(frames_path.read_text(encoding="utf-8"))
-        screenshots.extend(payload["frames"])
+        screenshots.extend(limit_frames(payload["frames"], load_settings().max_screenshots_per_chunk))
     return screenshots

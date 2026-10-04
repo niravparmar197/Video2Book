@@ -218,12 +218,12 @@ def test_resume_continues_playlist_after_crash_without_redoing_completed_video(
     real_write_chunk_notes = write_module._write_chunk_notes
     vid2_failed_once = {"done": False}
 
-    def flaky_write_chunk_notes(chunk_path, topics_path):
+    def flaky_write_chunk_notes(chunk_path, topics_path, *args):
         write_call_order.append(chunk_path.name)
         if chunk_path.name.startswith("vid2") and not vid2_failed_once["done"]:
             vid2_failed_once["done"] = True
             raise RuntimeError("simulated crash on video 2's write")
-        return real_write_chunk_notes(chunk_path, topics_path)
+        return real_write_chunk_notes(chunk_path, topics_path, *args)
 
     monkeypatch.setattr(write_module, "_write_chunk_notes", flaky_write_chunk_notes)
     monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes.")
@@ -297,12 +297,12 @@ def test_resume_after_crash_mid_refine_does_not_reverify_a_passed_chunk(tmp_path
     real_write_chunk_notes = write_module._write_chunk_notes
     vid2_failed_once = {"done": False}
 
-    def flaky_write_chunk_notes(chunk_path, topics_path):
+    def flaky_write_chunk_notes(chunk_path, topics_path, *args):
         write_call_order.append(chunk_path.name)
         if chunk_path.name.startswith("vid2") and not vid2_failed_once["done"]:
             vid2_failed_once["done"] = True
             raise RuntimeError("simulated crash on video 2's write")
-        return real_write_chunk_notes(chunk_path, topics_path)
+        return real_write_chunk_notes(chunk_path, topics_path, *args)
 
     monkeypatch.setattr(write_module, "_write_chunk_notes", flaky_write_chunk_notes)
     monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes.")

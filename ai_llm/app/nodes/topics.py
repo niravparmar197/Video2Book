@@ -105,6 +105,10 @@ def run_topics(chunk_path: str | Path, output_dir: str | Path) -> Path:
         )
         topics = []
 
+    return write_topics(chunk, topics, output_dir)
+
+
+def write_topics(chunk: dict, topics: list[str], output_dir: str | Path) -> Path:
     topics_path = topics_output_path(chunk, output_dir)
     topics_path.parent.mkdir(parents=True, exist_ok=True)
     topics_path.write_text(
@@ -120,3 +124,39 @@ def run_topics(chunk_path: str | Path, output_dir: str | Path) -> Path:
         encoding="utf-8",
     )
     return topics_path
+
+
+# "1. ", "01 - ", "Part 2: " in front of a YouTube chapter title.
+_CHAPTER_NUMBERING_RE = re.compile(r"^\s*(?:part\s*)?\d+\s*[.):\-–—]*\s*", re.IGNORECASE)
+_FILLER_CHAPTER_RE = re.compile(
+    r"^(?:intro|introduction|outro|ending|end screen|credits|sponsor|sponsors|sponsored|ad|ads|"
+    r"advertisement|thanks|thank you|subscribe|bonus|bloopers|q ?& ?a)$",
+    re.IGNORECASE,
+)
+_MIN_CHAPTER_TOPICS = 2
+
+
+def topics_from_youtube_chapters(chunk: dict, chapters: list[dict]) -> list[str] | None:
+    """The chunk's topics from the creator's own YouTube chapters, or None to
+    ask the LLM instead.
+
+    A creator's chapter list is the speaker's real structure, so for a video
+    that has one the per-chunk topics LLM call is skipped. Used only when the
+    chunk has at least two real (non-filler) chapter titles in Latin script:
+    a single chapter says too little, and a Hindi or Russian title needs the
+    LLM's translation into English.
+    """
+    start = chunk.get("start_seconds", 0.0)
+    end = chunk.get("end_seconds", float("inf"))
+    titles = []
+    for chapter in chapters:
+        if not start <= chapter["start_seconds"] < end:
+            continue
+        title = _CHAPTER_NUMBERING_RE.sub("", chapter["title"]).strip(" -–—:|")
+        if not title or _FILLER_CHAPTER_RE.match(title):
+            continue
+        letters = [character for character in title if character.isalpha()]
+        if not letters or sum(character.isascii() for character in letters) < 0.8 * len(letters):
+            return None
+        titles.append(title)
+    return titles if len(titles) >= _MIN_CHAPTER_TOPICS else None

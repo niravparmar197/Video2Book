@@ -16,10 +16,9 @@ locally with monkeypatch.setattr(verify_module, "call_writer", ...).
 
 app.nodes.book_pass.call_writer defaults to an inert "[]" response for the
 same reason: graph.py's book_pass node (sprints/v6) calls
-run_glossary()/run_index_terms()/run_preface() internally, each a
+run_glossary() internally, each a
 *separate* real LLM call from write.py's/topics.py's own call_writer. "[]"
-degrades glossary/index-terms to empty (harmless) and becomes the literal
-preface text (harmless unless a test asserts specific preface content).
+degrades glossary/index-terms to empty (harmless).
 Tests that specifically exercise book_pass override this locally.
 
 app.llm._last_call_at (sprints/v7 proactive rate-limit pacing) is reset
@@ -44,15 +43,45 @@ import json
 
 import pytest
 
+# Every setting app.config.load_settings() reads. Defined first so it runs
+# before the fixtures below that set specific values.
+_SETTING_ENV_VARS = (
+    "VIDEO_MODE", "CHUNK_MINUTES", "FRAMES_DOWNLOAD_MAX_MINUTES", "MAX_SCREENSHOTS_PER_CHUNK",
+    "TRANSCRIPT_SOURCE", "VIDEO_GENRE", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "BOOK_ORDER", "REVIEW_OUTLINE",
+    "PASS_SCORE", "MAX_REFINE_ATTEMPTS", "LLM_PARALLEL_CALLS", "MAX_BOOK_HOURS",
+    "MAX_BOOK_COST_USD", "VOLUME_HOURS", "YOUTUBE_COOKIES_FILE", "YOUTUBE_COOKIES_BROWSER",
+)
+
 
 @pytest.fixture(autouse=True)
-def _default_captions_only_video_mode(monkeypatch):
+def _isolated_from_developer_dotenv(monkeypatch):
+    """Tests see the code's defaults, never the developer's ai_llm/.env.
+    Without this the suite silently depended on whatever .env said (it
+    passed only while .env happened to set MAX_REFINE_ATTEMPTS=3)."""
+    monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
+    for name in _SETTING_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    # Stream-mode tests stub the stream path; the short-video download path
+    # would otherwise call real YouTube. Tests of that path set it themselves.
+    monkeypatch.setenv("FRAMES_DOWNLOAD_MAX_MINUTES", "0")
+
+
+@pytest.fixture(autouse=True)
+def _default_captions_only_video_mode(monkeypatch, _isolated_from_developer_dotenv):
     monkeypatch.setenv("VIDEO_MODE", "captions_only")
 
 
 @pytest.fixture(autouse=True)
-def _default_captions_transcript_source(monkeypatch):
+def _default_captions_transcript_source(monkeypatch, _isolated_from_developer_dotenv):
     monkeypatch.setenv("TRANSCRIPT_SOURCE", "captions")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_transcript_cache(monkeypatch, tmp_path):
+    """The real shared Whisper-transcript cache lives under ai_llm/output/;
+    each test gets its own empty one so a fake transcript from one test is
+    never served to another (or written into the real cache)."""
+    monkeypatch.setenv("TRANSCRIPT_CACHE_DIR", str(tmp_path / "_transcript_cache"))
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +100,15 @@ def _default_inert_book_pass(monkeypatch):
     from app.nodes import book_pass as book_pass_module
 
     monkeypatch.setattr(book_pass_module, "call_writer", lambda prompt, **kw: "[]")
+
+
+@pytest.fixture(autouse=True)
+def _default_lecture_genre(monkeypatch):
+    """The topics node also decides the book's genre with one LLM call; tests
+    get "lecture" (the study-notes style) unless they override it."""
+    from app.nodes import genre as genre_module
+
+    monkeypatch.setattr(genre_module, "call_writer", lambda prompt, **kw: "lecture")
 
 
 @pytest.fixture(autouse=True)

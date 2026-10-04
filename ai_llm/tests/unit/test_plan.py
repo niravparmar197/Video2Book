@@ -173,3 +173,45 @@ def test_run_plan_topics_raises_instead_of_shipping_an_exploded_degraded_plan(
         plan_node.run_plan_topics(tmp_path)
 
     assert not plan_node.plan_json_path(tmp_path).exists()
+
+
+def test_run_single_chunk_plan_makes_one_chapter_covering_every_topic_without_an_llm_call(
+    tmp_path, monkeypatch
+):
+    _write_topics_file(
+        tmp_path, "vid1", 0, ["Gradient Descent", "Learning Rate", "welcome to my channel"]
+    )
+
+    def fail(prompt, **kw):
+        raise AssertionError("a single-chunk plan must not call the LLM")
+
+    monkeypatch.setattr(plan_node, "call_writer", fail)
+
+    plan = plan_node.run_single_chunk_plan(tmp_path, "Intro to Optimization")
+
+    assert plan == [
+        {
+            "title": "Intro to Optimization",
+            "level": 1,
+            "needs": [],
+            "sources": [{"video_id": "vid1", "chunk_index": 0}],
+            "covers": ["Gradient Descent", "Learning Rate"],
+        }
+    ]
+    assert json.loads(plan_node.plan_json_path(tmp_path).read_text(encoding="utf-8")) == plan
+
+
+def test_run_single_chunk_plan_returns_none_when_there_is_more_than_one_chunk(tmp_path):
+    _write_topics_file(tmp_path, "vid1", 0, ["A"])
+    _write_topics_file(tmp_path, "vid2", 0, ["B"])
+
+    assert plan_node.run_single_chunk_plan(tmp_path, "Title") is None
+    assert not plan_node.plan_json_path(tmp_path).exists()
+
+
+def test_single_chunk_plan_does_not_use_an_unprintable_hindi_title(tmp_path):
+    _write_topics_file(tmp_path, "vid1", 0, ["Rise of Moscow", "Ivan the Terrible"])
+
+    plan = plan_node.run_single_chunk_plan(tmp_path, "सालों की कहानी")
+
+    assert plan[0]["title"] == "Rise of Moscow"

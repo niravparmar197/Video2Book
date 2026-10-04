@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from api import storage
+from api.ai_llm_bridge import load_settings as ai_llm_load_settings
 from api.ai_llm_bridge import resume_book as ai_llm_resume_book
 from api.ai_llm_bridge import run_book as ai_llm_run_book
 from api.ai_llm_bridge import run_plan as ai_llm_run_plan
@@ -145,6 +146,16 @@ async def process_run_book(job: Any, token: str | None = None) -> dict:
     book_id = job.data["book_id"]
     url = job.data["url"]
     phase = job.data.get("phase", "render")
+    output_dir = Path(settings.output_root) / book_id
+
+    # No outline.json yet means the book failed in the plan phase. Resuming
+    # the full render graph from that checkpoint never reaches render (the
+    # plan graph has no frames node, so render's join never fires) and the
+    # retry died with KeyError 'pdf_path' -- such a book could never be
+    # retried. Re-run the plan phase instead; finished steps are cached.
+    if phase == "retry" and not (output_dir / "outline.json").exists():
+        phase = "plan"
+
     logger = get_logger(book_id=book_id, step=f"run_book:{phase}")
 
     running_status = _RUNNING_STATUS[phase]
@@ -153,7 +164,6 @@ async def process_run_book(job: Any, token: str | None = None) -> dict:
     _set_status(book_id, status=running_status, error_message=None)
     logger.info("status changed", extra={"status": running_status})
 
-    output_dir = Path(settings.output_root) / book_id
     try:
         if phase == "plan":
             videos, chapters = await asyncio.to_thread(
@@ -161,6 +171,27 @@ async def process_run_book(job: Any, token: str | None = None) -> dict:
             )
             _save_outline(book_id, videos, chapters)
             result: dict = {"chapters": len(chapters)}
+
+            # REVIEW_OUTLINE=false (root AGENTS.md setting): skip the human
+            # outline-review gate and render right away in this same job,
+            # instead of sitting in outline_ready until someone clicks
+            # "Save & generate PDF". Inline rather than re-enqueued: this
+            # job still holds the book's jobId, so a re-enqueue under the
+            # same id would silently no-op -- and inline also skips a trip
+            # back through the queue.
+            if not ai_llm_load_settings().review_outline:
+                success_status = "done"
+                _set_status(book_id, status="rendering")
+                logger.info(
+                    "status changed",
+                    extra={"status": "rendering", "reason": "REVIEW_OUTLINE=false"},
+                )
+                pdf_path = await asyncio.to_thread(
+                    ai_llm_run_book, url, output_dir, False, get_checkpointer()
+                )
+                key = await asyncio.to_thread(_finalize_pdf, book_id, pdf_path)
+                _set_status(book_id, pdf_path=key)
+                result = {"chapters": len(chapters), "pdf_path": key}
         elif phase == "retry":
             pdf_path = await asyncio.to_thread(ai_llm_resume_book, output_dir, get_checkpointer())
             key = await asyncio.to_thread(_finalize_pdf, book_id, pdf_path)

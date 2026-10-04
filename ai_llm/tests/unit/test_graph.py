@@ -85,6 +85,35 @@ def test_run_book_produces_book_pdf(tmp_path, monkeypatch):
         assert (output_dir / "chapters" / f"{video_id}.tex").exists()
 
 
+def test_get_warnings_returns_empty_list_before_any_run(tmp_path):
+    assert graph_module.get_warnings(tmp_path / "output") == []
+
+
+def test_run_book_persists_node_degradation_warnings_to_disk(tmp_path, monkeypatch):
+    """sprints/v11: a node's logger.warning() (e.g. topics.py's "no usable
+    JSON array" degrade-to-empty-list path) previously only reached
+    stdout/worker logs. run_book must now also persist it to
+    warnings.jsonl so a caller (backend/'s /events stream) can surface it.
+    """
+    output_dir = tmp_path / "output" / "some-book"
+
+    monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
+    # Never a valid JSON array -> topics.py exhausts its retry and logs the
+    # warning this test is checking for.
+    monkeypatch.setattr(topics_module, "call_writer", lambda prompt, **kw: "not json")
+    monkeypatch.setattr(
+        write_module, "call_writer", lambda prompt, **kw: "## Neural Networks\n\nNotes."
+    )
+    monkeypatch.setattr(graph_module, "compile_chapter", _fake_compile_chapter)
+
+    graph_module.run_book(TEST_PLAYLIST_URL, output_dir)
+
+    warnings = graph_module.get_warnings(output_dir)
+    assert len(warnings) >= 1
+    assert any("produced no usable JSON array" in w["message"] for w in warnings)
+    assert all({"ts", "logger", "message"} <= w.keys() for w in warnings)
+
+
 def test_run_book_defaults_to_sqlite_checkpoint_file_when_no_checkpointer_given(
     tmp_path, monkeypatch
 ):
@@ -198,7 +227,7 @@ def test_get_progress_reports_frames_done_and_topics_pending_when_only_topics_fa
     saver = InMemorySaver()
     monkeypatch.setenv("VIDEO_MODE", "stream")
 
-    def fake_run_frames(video_id, video_url, chunk, out_dir):
+    def fake_run_frames(video_id, video_url, chunk, out_dir, **kwargs):
         frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
         frames_path.parent.mkdir(parents=True, exist_ok=True)
         frames_path.write_text('{"video_id": "%s", "chunk_index": 0, "frames": []}' % video_id)
@@ -482,7 +511,7 @@ def test_run_book_video_mode_stream_calls_run_frames_per_chunk(tmp_path, monkeyp
 
     frames_calls = []
 
-    def fake_run_frames(video_id, video_url, chunk, out_dir):
+    def fake_run_frames(video_id, video_url, chunk, out_dir, **kwargs):
         frames_calls.append((video_id, chunk["chunk_index"]))
         frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
         frames_path.parent.mkdir(parents=True, exist_ok=True)
@@ -533,7 +562,7 @@ def test_run_book_runs_frames_and_topics_concurrently_not_sequentially(
     start_times: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    def fake_run_frames(video_id, video_url, chunk, out_dir):
+    def fake_run_frames(video_id, video_url, chunk, out_dir, **kwargs):
         start_times.setdefault("frames", time.perf_counter() - t0)
         time.sleep(0.3)
         frames_path = Path(out_dir) / "work" / "frames" / f"{video_id}_{chunk['chunk_index']:03d}.json"
@@ -625,9 +654,9 @@ def test_run_book_respects_outline_skip_flag_on_rerun(tmp_path, monkeypatch):
     render_chapter_calls = []
     real_render_chapter = graph_module.render_chapter
 
-    def counting_render_chapter(video_id, title, notes, out_dir, screenshots=None, index_terms=None):
+    def counting_render_chapter(video_id, title, notes, out_dir, screenshots=None, index_terms=None, section_times=None):
         render_chapter_calls.append(video_id)
-        return real_render_chapter(video_id, title, notes, out_dir, screenshots, index_terms)
+        return real_render_chapter(video_id, title, notes, out_dir, screenshots, index_terms, section_times)
 
     monkeypatch.setattr(graph_module, "run_fetch_playlist", _fake_run_fetch_playlist)
     monkeypatch.setattr(topics_module, "call_writer", lambda prompt, **kw: '["neural networks"]')
@@ -860,9 +889,183 @@ def test_run_book_wires_real_glossary_and_indexes_into_the_compiled_book(tmp_pat
     main_tex = (output_dir / "chapters" / "main.tex").read_text(encoding="utf-8")
     assert r"\input{glossary}" in main_tex
     assert r"\printindex" in main_tex
-    assert r"\input{topic_index}" in main_tex
-    assert "Preface" in main_tex
+    # Topic notes, not a formal book: no preface or topic-index filler pages.
+    assert r"\input{topic_index}" not in main_tex
+    assert "Preface" not in main_tex
+    assert not (output_dir / "work" / "book_pass" / "preface.md").exists()
 
     glossary_tex = (output_dir / "chapters" / "glossary.tex").read_text(encoding="utf-8")
     assert "Gradient Descent" in glossary_tex
     assert "An optimization method." in glossary_tex
+
+
+def test_concurrent_runs_each_capture_only_their_own_warnings(tmp_path):
+    """With worker concurrency > 1, two books run in one process at once.
+    Each run's warnings.jsonl must hold only that run's warnings -- the
+    collector used to attach a handler per run to the shared "app.nodes"
+    logger, which copied every book's warnings into every running book's
+    file."""
+    import logging
+    import threading
+
+    node_logger = logging.getLogger("app.nodes.test_isolation")
+    both_inside = threading.Barrier(2)
+
+    def run(name):
+        with graph_module._collect_warnings(tmp_path / name):
+            both_inside.wait(timeout=5)  # both collectors active at once
+            node_logger.warning("warning from %s", name)
+            both_inside.wait(timeout=5)
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in ("book_a", "book_b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for name, other in (("book_a", "book_b"), ("book_b", "book_a")):
+        messages = [w["message"] for w in graph_module.get_warnings(tmp_path / name)]
+        assert messages == [f"warning from {name}"], messages
+
+
+def test_timed_node_records_seconds_per_node_and_merges_with_other_nodes(tmp_path):
+    state = {"output_dir": str(tmp_path)}
+
+    result = graph_module._timed("fetch", lambda s: {"ok": True})(state)
+    graph_module._timed("chunk", lambda s: {})(state)
+
+    assert result == {"ok": True}
+    timings = graph_module.get_timings(tmp_path)
+    assert set(timings) == {"fetch", "chunk"}
+    assert all(seconds >= 0 for seconds in timings.values())
+
+
+def test_timed_node_records_timing_even_when_the_node_fails(tmp_path):
+    def boom(state):
+        raise RuntimeError("nope")
+
+    with pytest.raises(RuntimeError):
+        graph_module._timed("write", boom)({"output_dir": str(tmp_path)})
+
+    assert "write" in graph_module.get_timings(tmp_path)
+
+
+def test_get_timings_is_empty_before_any_node_ran(tmp_path):
+    assert graph_module.get_timings(tmp_path) == {}
+
+
+def test_plan_node_skips_the_merge_llm_for_a_single_chunk_book(tmp_path, monkeypatch):
+    topics_dir = tmp_path / "work" / "topics"
+    topics_dir.mkdir(parents=True)
+    (topics_dir / "vid1_000.json").write_text(
+        json.dumps({"video_id": "vid1", "chunk_index": 0, "topics": ["A", "B"]}), encoding="utf-8"
+    )
+
+    def fail(*args, **kwargs):
+        raise AssertionError("the merge LLM call must be skipped for a single-chunk book")
+
+    monkeypatch.setattr(graph_module, "run_plan_topics", fail)
+
+    graph_module._plan_node({"output_dir": str(tmp_path), "videos": [{"title": "My Video"}]})
+
+    plan = json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))
+    assert [entry["title"] for entry in plan] == ["My Video"]
+    assert plan[0]["covers"] == ["A", "B"]
+
+
+def test_topic_chapters_of_a_13_hour_video_total_13_hours_and_show_each_chunk_once():
+    # 26 chunks (13h at 30 min). 40 chapters; each chapter draws on 1-2 chunks, so
+    # many chunks feed several chapters -- the old per-chapter sum counted them all.
+    chapters = []
+    for index in range(40):
+        first = index * 26 // 40
+        sources = [{"video_id": "v", "chunk_index": first}]
+        if index % 3 == 0:
+            sources.append({"video_id": "v", "chunk_index": min(first + 1, 25)})
+        chapters.append({"slug": f"c{index}", "sources": sources})
+    used_chunks = {s["chunk_index"] for c in chapters for s in c["sources"]}
+
+    result = graph_module._topic_chapter_hours_and_fresh_sources(chapters, chunk_minutes=30)
+
+    total_hours = sum(hours for hours, _ in result)
+    assert total_hours == pytest.approx(len(used_chunks) * 0.5)  # real time, not 20-40h
+    assert total_hours <= 13
+    shown = [source["chunk_index"] for _, fresh in result for source in fresh]
+    assert len(shown) == len(set(shown)) == len(used_chunks)  # no chunk's screenshots repeated
+    # And a 13h book now fits in one volume at the default VOLUME_HOURS.
+    assert total_hours <= graph_module.load_settings().volume_hours
+
+
+def test_map_parallel_runs_up_to_llm_parallel_calls_at_once(monkeypatch):
+    import threading
+    import time as time_module
+
+    monkeypatch.setenv("LLM_PARALLEL_CALLS", "6")
+    lock = threading.Lock()
+    running = {"now": 0, "peak": 0}
+
+    def work(item):
+        with lock:
+            running["now"] += 1
+            running["peak"] = max(running["peak"], running["now"])
+        time_module.sleep(0.05)
+        with lock:
+            running["now"] -= 1
+        return item * 2
+
+    assert graph_module._map_parallel(list(range(20)), work) == [i * 2 for i in range(20)]
+    assert running["peak"] == 6
+    running["peak"] = 0
+    graph_module._map_parallel(list(range(20)), work, max_workers=2)
+    assert running["peak"] == 2
+
+
+def test_a_failed_screenshot_scan_does_not_fail_the_book(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+    chunk_path = tmp_path / "work" / "chunks" / "vid1_000.json"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_text(json.dumps({"video_id": "vid1", "chunk_index": 0}), encoding="utf-8")
+
+    def blocked(*args, **kwargs):
+        raise RuntimeError("Sign in to confirm you're not a bot")
+
+    monkeypatch.setattr(graph_module, "run_frames", blocked)
+
+    result = graph_module._frames_node(
+        {
+            "output_dir": str(tmp_path),
+            "videos": [{"video_id": "vid1", "url": "u", "duration_seconds": 60}],
+            "chunk_paths": {"vid1": [str(chunk_path)]},
+        }
+    )
+
+    assert result == {}
+
+
+def test_topics_node_uses_youtube_chapters_instead_of_the_llm(tmp_path, monkeypatch):
+    chunk_path = tmp_path / "work" / "chunks" / "v1_000.json"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_text(
+        json.dumps({"video_id": "v1", "chunk_index": 0, "start_seconds": 0, "end_seconds": 1800, "text": "t"}),
+        encoding="utf-8",
+    )
+
+    def fail(*args, **kwargs):
+        raise AssertionError("chapters available: no topics LLM call")
+
+    monkeypatch.setattr(graph_module, "run_topics", fail)
+    chapters = [
+        {"title": "Load Balancing", "start_seconds": 0, "end_seconds": 600},
+        {"title": "Caching", "start_seconds": 600, "end_seconds": 1800},
+    ]
+
+    graph_module._topics_node(
+        {
+            "output_dir": str(tmp_path),
+            "videos": [{"video_id": "v1", "title": "T", "chapters": chapters}],
+            "chunk_paths": {"v1": [str(chunk_path)]},
+        }
+    )
+
+    saved = json.loads((tmp_path / "work" / "topics" / "v1_000.json").read_text(encoding="utf-8"))
+    assert saved["topics"] == ["Load Balancing", "Caching"]

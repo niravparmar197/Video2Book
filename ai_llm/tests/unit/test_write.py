@@ -170,6 +170,7 @@ def test_run_write_topic_raises_when_source_chunk_missing(tmp_path):
 
 
 def test_run_write_refines_chunk_notes_until_judge_passes(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "3")  # this test exercises the 3-attempt ceiling
     output_dir = tmp_path / "output"
     _write_chunk_and_topics(output_dir, "vid1", 0, text="Some transcript text.", topics=["a"])
 
@@ -200,6 +201,7 @@ def test_run_write_refines_chunk_notes_until_judge_passes(tmp_path, monkeypatch)
 
 
 def test_run_write_gives_up_after_max_refine_attempts(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "3")  # this test exercises the 3-attempt ceiling
     output_dir = tmp_path / "output"
     _write_chunk_and_topics(output_dir, "vid1", 0, text="Some transcript text.", topics=["a"])
 
@@ -237,6 +239,7 @@ _TOPIC = {
 
 
 def test_run_write_topic_refines_notes_until_judge_passes(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "3")  # this test exercises the 3-attempt ceiling
     output_dir = tmp_path / "output"
     _write_chunk_and_topics(output_dir, "vid1", 0, text="Some transcript text.", topics=["gd"])
 
@@ -267,6 +270,7 @@ def test_run_write_topic_refines_notes_until_judge_passes(tmp_path, monkeypatch)
 
 
 def test_run_write_topic_gives_up_after_max_refine_attempts(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "3")  # this test exercises the 3-attempt ceiling
     output_dir = tmp_path / "output"
     _write_chunk_and_topics(output_dir, "vid1", 0, text="Some transcript text.", topics=["gd"])
 
@@ -324,6 +328,7 @@ def test_write_and_refine_returns_last_score_and_max_attempts_when_never_passing
 def test_run_write_writes_chapter_status_sidecar_with_aggregated_score_and_attempts(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "3")  # this test exercises the 3-attempt ceiling
     output_dir = tmp_path / "output"
     _write_chunk_and_topics(output_dir, "vid1", 0, text="chunk zero content", topics=["a"])
     _write_chunk_and_topics(output_dir, "vid1", 1, text="chunk one content", topics=["b"])
@@ -368,3 +373,206 @@ def test_run_write_topic_writes_chapter_status_sidecar(tmp_path, monkeypatch):
         "attempts": 1,
         "passed": True,
     }
+
+
+def test_writer_prompts_share_the_style_rules_and_ask_for_callouts_highlights_and_takeaways(
+    tmp_path,
+):
+    chunk_prompt = write_module._load_prompt("some transcript", ["Topic A", "Topic B"])
+    topic_prompt = write_module._load_topic_prompt(
+        "Topic A", [{"video_id": "v", "chunk_index": 0, "text": "some excerpt"}], []
+    )
+
+    for prompt in (chunk_prompt, topic_prompt):
+        assert "> Key point:" in prompt
+        assert "==double equals==" in prompt
+        assert "## Key Takeaways" in prompt
+        assert "```diagram" in prompt
+        assert "{style_rules}" not in prompt  # the placeholder was filled
+    assert "- Topic A" in chunk_prompt and "- Topic B" in chunk_prompt
+    assert "some transcript" in chunk_prompt
+    assert "some excerpt" in topic_prompt
+
+
+def test_run_write_topic_gives_each_covered_subtopic_its_own_section(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(output_dir, "vid1", 0, text="All about GD and LR.", topics=["x"])
+    captured = {}
+
+    def fake_call_writer(prompt, **kw):
+        captured["prompt"] = prompt
+        return "## Gradient Descent\n\nNotes."
+
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+
+    run_write_topic(
+        {
+            "slug": "intro",
+            "title": "Intro",
+            "sources": [{"video_id": "vid1", "chunk_index": 0}],
+            "covers": ["Gradient Descent", "Learning Rate"],
+        },
+        output_dir,
+    )
+
+    assert "own `##` section" in captured["prompt"]
+    assert "- Gradient Descent" in captured["prompt"]
+    assert "- Learning Rate" in captured["prompt"]
+
+
+def test_writer_prompt_asks_for_simple_english_and_an_example_per_topic():
+    prompt = write_module._load_prompt("some transcript", ["Topic A"])
+
+    assert "SIMPLE ENGLISH" in prompt
+    assert "15-year-old" in prompt
+    assert "Think of it like" in prompt
+    # An analogy must never smuggle in facts the transcript doesn't state.
+    assert "no numbers, statistics, names or claims" in prompt
+
+
+def test_writer_prompt_enforces_grounding_of_warnings_definitions_and_charts():
+    prompt = write_module._load_prompt("some transcript", ["Topic A"])
+
+    assert "Never write a definition, quality, rule, warning or reason that the speaker did not say" in prompt
+    assert "ONLY when the speaker clearly warns" in prompt
+    assert "Never add, subtract or estimate a value" in prompt
+    assert "garbled" in prompt
+    assert "memory tricks" in prompt
+    assert "Never use a code fence for anything except" in prompt
+
+
+def test_run_write_drops_a_chart_with_a_value_not_in_the_transcript(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(
+        output_dir, "vid1", 0, text="Spend 10 15 minutes on UML.", topics=["Time"]
+    )
+    chart = '```chart\n{"type":"bar","title":"T","categories":["UML","Coding"],"values":[15,30]}\n```'
+    monkeypatch.setattr(
+        write_module, "call_writer", lambda prompt, **kw: f"## Time\nText.\n\n{chart}"
+    )
+
+    notes_path = run_write("vid1", output_dir)
+
+    assert "```chart" not in notes_path.read_text(encoding="utf-8")
+
+
+def test_writer_prompt_forbids_filling_in_unexplained_items_and_meta_talk_and_peer_chains():
+    prompt = write_module._load_prompt("some transcript", ["Topic A"])
+
+    assert "list the names only" in prompt
+    assert 'Never mention "the source"' in prompt
+    assert "Never chain peers" in prompt
+
+
+def test_refine_keeps_the_best_scoring_attempt_not_the_last(tmp_path, monkeypatch):
+    scores = iter([6, 3])
+    notes = iter(["## Good\nbest attempt", "## Worse\nlater attempt"])
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "2")
+    monkeypatch.setattr(write_module, "call_writer", lambda prompt, **kw: next(notes))
+    monkeypatch.setattr(
+        write_module,
+        "run_verify",
+        lambda transcript, text: verify_module.VerifyResult(score=next(scores), feedback="meh"),
+    )
+
+    result, score, attempts = write_module._write_and_refine("prompt", "transcript")
+
+    assert (result, score, attempts) == ("## Good\nbest attempt", 6, 2)
+
+
+_INVENTED = "## Patterns\n- *Observer*, *Strategy*, *Visitor* and *Command* are behavioral.\n"
+
+
+def test_refine_fails_a_section_full_of_invented_names_even_if_the_judge_says_9(monkeypatch):
+    prompts = []
+    attempts = iter([_INVENTED, "## Patterns\n- **Singleton** is one shared object.\n"])
+
+    def fake_call_writer(prompt, **kw):
+        prompts.append(prompt)
+        return next(attempts)
+
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "2")
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+    monkeypatch.setattr(
+        write_module, "run_verify", lambda t, n: verify_module.VerifyResult(score=9, feedback="great")
+    )
+
+    notes, score, attempt_count = write_module._write_and_refine(
+        "prompt", "a singleton is one shared object"
+    )
+
+    assert attempt_count == 2
+    assert "Singleton" in notes
+    assert "These names never appear in the transcript" in prompts[1]
+    assert "strategy" in prompts[1]
+
+
+def test_invented_names_still_left_after_the_last_attempt_are_removed(monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "1")
+    monkeypatch.setattr(
+        write_module,
+        "call_writer",
+        lambda prompt, **kw: _INVENTED + "- **Singleton** is kept.\n",
+    )
+    monkeypatch.setattr(
+        write_module, "run_verify", lambda t, n: verify_module.VerifyResult(score=9, feedback="great")
+    )
+
+    notes, score, _ = write_module._write_and_refine("prompt", "a singleton is one shared object")
+
+    assert "Observer" not in notes and "Visitor" not in notes
+    assert "Singleton** is kept" in notes
+    assert score < 7  # honest: it did not pass
+
+
+def test_ensure_closing_section_rebuilds_a_missing_best_moments_from_the_quotes():
+    notes = '## Bit\n- Setup.\n> Quote: "Line one."\n## Bit two\n> Quote: "Line two."\n'
+
+    result = write_module.ensure_closing_section(notes, "comedy")
+
+    assert result.endswith('## Best Moments\n- "Line one."\n- "Line two."')
+
+
+def test_ensure_closing_section_rebuilds_key_takeaways_from_key_points():
+    notes = "## A\n> Key point: First idea.\n## B\n> **Key point:** Second idea.\n"
+
+    result = write_module.ensure_closing_section(notes, "lecture")
+
+    assert result.endswith("## Key Takeaways\n- First idea.\n- Second idea.")
+
+
+def test_ensure_closing_section_leaves_notes_alone_when_present_or_nothing_to_build_from():
+    present = "## A\n> Key point: X.\n\n## Key Takeaways\n- X.\n"
+    nothing = "## A\n- plain notes\n"
+
+    assert write_module.ensure_closing_section(present, "podcast") == present
+    assert write_module.ensure_closing_section(nothing, "lecture") == nothing
+
+
+def test_a_refine_revises_the_previous_attempt_with_the_feedback_instead_of_starting_over(
+    monkeypatch,
+):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "2")
+    prompts = []
+    attempts = iter(["## A\n- First attempt with a wrong 99%.", "## A\n- Fixed attempt."])
+    scores = iter([4, 8])
+
+    def fake_call_writer(prompt, **kw):
+        prompts.append(prompt)
+        return next(attempts)
+
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+    monkeypatch.setattr(
+        write_module,
+        "run_verify",
+        lambda t, n: verify_module.VerifyResult(score=next(scores), feedback="'99%' is not in the transcript"),
+    )
+
+    notes, score, count = write_module._write_and_refine("WRITE PROMPT", "the transcript", "podcast")
+
+    assert (notes, score, count) == ("## A\n- Fixed attempt.", 8, 2)
+    revise = prompts[1]
+    assert "WRITE PROMPT" not in revise  # not a fresh write from scratch
+    assert "First attempt with a wrong 99%" in revise
+    assert "'99%' is not in the transcript" in revise and "4/10" in revise
+    assert "the transcript" in revise and "PODCAST NOTES" in revise

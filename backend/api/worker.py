@@ -36,7 +36,7 @@ async def _main() -> None:
         {
             "connection": settings.redis_url,
             "lockDuration": LOCK_DURATION_MS,
-            "concurrency": 1,
+            "concurrency": settings.worker_concurrency,
         },
     )
     heartbeat_task = asyncio.create_task(_heartbeat_loop())

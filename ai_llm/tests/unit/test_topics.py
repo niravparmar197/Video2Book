@@ -183,3 +183,34 @@ def test_run_topics_falls_back_to_gemini_when_nvidia_rate_limited(tmp_path, monk
     assert payload["topics"] == ["gradient descent", "backpropagation"]
     assert len(gemini_client.received_prompts) == 1
     assert "gradient descent minimizes the loss" in gemini_client.received_prompts[0]
+
+
+from app.nodes.topics import topics_from_youtube_chapters  # noqa: E402
+
+_CHAPTERS = [
+    {"title": "Intro", "start_seconds": 0, "end_seconds": 60},
+    {"title": "1. What is a Load Balancer", "start_seconds": 60, "end_seconds": 600},
+    {"title": "02 - Consistent Hashing", "start_seconds": 600, "end_seconds": 1500},
+    {"title": "Sponsor", "start_seconds": 1500, "end_seconds": 1560},
+    {"title": "Caching Strategies", "start_seconds": 1900, "end_seconds": 2500},
+]
+
+
+def test_youtube_chapters_in_the_chunk_become_its_topics_without_filler_or_numbering():
+    chunk = {"start_seconds": 0, "end_seconds": 1800}
+
+    assert topics_from_youtube_chapters(chunk, _CHAPTERS) == [
+        "What is a Load Balancer",
+        "Consistent Hashing",
+    ]
+
+
+def test_too_few_chapters_or_non_latin_titles_fall_back_to_the_llm():
+    one = {"start_seconds": 1800, "end_seconds": 3600}  # only "Caching Strategies"
+    hindi = [
+        {"title": "रूस का इतिहास", "start_seconds": 0, "end_seconds": 60},
+        {"title": "मास्को", "start_seconds": 60, "end_seconds": 120},
+    ]
+
+    assert topics_from_youtube_chapters(one, _CHAPTERS) is None
+    assert topics_from_youtube_chapters({"start_seconds": 0, "end_seconds": 1800}, hindi) is None

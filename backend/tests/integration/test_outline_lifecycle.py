@@ -95,6 +95,14 @@ async def test_failed_book_retry_reaches_done(
     fake_pdf = tmp_path / book.id / "book.pdf"
     fake_pdf.parent.mkdir(parents=True)
     fake_pdf.write_bytes(b"%PDF-1.4 retried")
+    # It failed after planning (outline.json exists), so retry resumes the
+    # render graph; a plan-phase failure re-runs the plan instead.
+    (tmp_path / book.id / "outline.json").write_text("[]", encoding="utf-8")
+    import dataclasses
+
+    monkeypatch.setattr(
+        run_book_job, "settings", dataclasses.replace(run_book_job.settings, output_root=str(tmp_path))
+    )
     monkeypatch.setattr(run_book_job, "ai_llm_resume_book", lambda output_dir, checkpointer: fake_pdf)
 
     await process_run_book(_job(book.id, book.url, phase="retry"))

@@ -6,21 +6,47 @@ import { NewBookScreen } from './components/NewBookScreen';
 import { MyBooksScreen } from './components/MyBooksScreen';
 import { BookDetailScreen } from './components/BookDetailScreen';
 import { getApiKey, clearApiKey } from './lib/api';
+import { getSavedView, setSavedView } from './lib/myBooks';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(!!getApiKey());
-  const [activeTab, setActiveTab] = useState<TabType>('new');
-  const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
+  // Restored from localStorage (sprints/v12) so a page refresh resumes
+  // exactly where the user was -- an in-flight book's own progress stream
+  // already survives a reconnect fine (the backend tracks elapsed time
+  // from the run's checkpoint history, not from when this tab connected),
+  // but losing selectedBookId here dropped the user back on "New Book"
+  // with no way back to it, which looked like the whole run had restarted.
+  const savedView = getSavedView();
+  const [activeTab, setActiveTab] = useState<TabType>(savedView?.activeTab ?? 'new');
+  const [selectedBookId, setSelectedBookId] = useState<string | null>(
+    savedView?.selectedBookId ?? null
+  );
+
+  const persistView = (tab: TabType, bookId: string | null) => {
+    setSavedView({ activeTab: tab, selectedBookId: bookId });
+  };
 
   const handleLogout = () => {
     clearApiKey();
     setIsLoggedIn(false);
     setSelectedBookId(null);
+    setSavedView({ activeTab: 'new', selectedBookId: null });
   };
 
   const handleSelectTab = (tab: TabType) => {
     setSelectedBookId(null);
     setActiveTab(tab);
+    persistView(tab, null);
+  };
+
+  const handleSelectBook = (bookId: string) => {
+    setSelectedBookId(bookId);
+    persistView(activeTab, bookId);
+  };
+
+  const handleBookCreated = (bookId: string) => {
+    setSelectedBookId(bookId);
+    persistView(activeTab, bookId);
   };
 
   const breadcrumb = selectedBookId ? 'Book' : activeTab === 'new' ? 'New Book' : 'My Books';
@@ -43,9 +69,9 @@ export default function App() {
         {selectedBookId ? (
           <BookDetailScreen bookId={selectedBookId} />
         ) : activeTab === 'new' ? (
-          <NewBookScreen onBookCreated={setSelectedBookId} />
+          <NewBookScreen onBookCreated={handleBookCreated} />
         ) : (
-          <MyBooksScreen onSelectBook={setSelectedBookId} />
+          <MyBooksScreen onSelectBook={handleSelectBook} />
         )}
       </main>
 

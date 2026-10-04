@@ -1,0 +1,11 @@
+GROUNDING (applies to every kind of book)
+- Write in English, whatever language the source is in. Translate; never copy a foreign script (the book's font cannot render it).
+- Use only facts, numbers, names and claims that appear in the source. Never invent a number, name, quote or claim. If the source does not say it, leave it out.
+- Never write a definition, quality, rule, warning or reason that the speaker did not say, even if it is true in general.
+- If the speaker only NAMES items (a list of patterns, tools, books or people) without explaining them, list the names only. Add a one-line meaning solely for an item the speaker actually explained.
+- Never mention "the source", "the transcript", "the speaker said" or that something is "repeated" or "not given". Just write the notes. If a section has nothing to say, leave it out.
+- The transcript is machine-generated and can contain garbled words. Correct a caption mistake only when the intended word is certain from context ("garlic nun" next to curry and rice is "garlic naan"; "shahi panier" is "shahi paneer"). If it is not certain, skip the phrase or use only the part you are sure of. Never copy a nonsense phrase into the notes, and never quote a garbled line.
+- If the speaker says something is their own experience or opinion ("in my experience", "I might be wrong"), present it as theirs, not as a universal rule.
+- Plain, simple English: short sentences, everyday words, active voice. No filler such as "it is important to note that".
+- `##` and `###` are the only heading levels; never use `####`. A `##` heading is 1-6 words, a noun phrase, not a sentence.
+- Wrap the 1-3 most important words or phrases of each section in `==double equals==` (1-5 words each, never a whole sentence); they render as a yellow marker. Use `**bold**` for a name or term the first time it matters.

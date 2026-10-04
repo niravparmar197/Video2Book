@@ -14,6 +14,7 @@ import logging
 import re
 from pathlib import Path
 
+from app.latex.tex import renderable_title
 from app.llm import call_writer
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "plan_topics.md"
@@ -177,6 +178,42 @@ def _degrade_to_unmerged_plan(chunk_topics: list[dict]) -> list[dict]:
         for entry in chunk_topics
         for topic in entry["topics"]
     ]
+
+
+def run_single_chunk_plan(output_dir: str | Path, title: str) -> list[dict] | None:
+    """Plan a book whose whole source is ONE chunk (a single video of at
+    most CHUNK_MINUTES): one chapter titled `title` that covers every topic
+    in the chunk, with no LLM call.
+
+    There is nothing to merge across videos, and splitting a short video
+    into one chapter per topic cost one write + judge + index-terms call
+    per chapter (a 5-minute video produced ~4 one-page chapters) for a
+    worse book. The chunk's topics ride along as `covers` so the writer
+    gives each its own `##` section. Returns None when the playlist has
+    more than one chunk, so the caller runs the real merge instead.
+    """
+    output_dir = Path(output_dir)
+    entries = _load_all_chunk_topics(output_dir)
+    if len(entries) != 1:
+        return None
+
+    entry = entries[0]
+    covers = [topic for topic in entry["topics"] if _is_topical(topic)]
+    plan = [
+        {
+            # A non-Latin YouTube title (Hindi, Russian, ...) can't be printed
+            # in the book's font; the topics are always English.
+            "title": renderable_title(title, covers[0] if covers else "Video Notes"),
+            "level": 1,
+            "needs": [],
+            "sources": [{"video_id": entry["video_id"], "chunk_index": entry["chunk_index"]}],
+            "covers": covers,
+        }
+    ]
+    plan_json_path(output_dir).write_text(
+        json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return plan
 
 
 def run_plan_topics(output_dir: str | Path) -> list[dict]:

@@ -6,6 +6,18 @@ what this sprint covers.
 
 ## Local dev quickstart
 
+> **Worker after code changes.** The worker imports `ai_llm` once at startup, but
+> `ai_llm/app/prompts/*.md` are read fresh on every call -- so after editing
+> Python code, a running worker mixes old code with new prompts (a real failure:
+> `KeyError 'channel'`). In development run it under `watchfiles`, which restarts
+> it whenever `api/` or `ai_llm/app/` changes (an in-flight job is picked up again
+> by BullMQ once its lock expires):
+>
+> ```
+> watchfiles "python -m api.worker" api ../ai_llm/app
+> ```
+
+
 1. **Copy env vars**
 
    ```

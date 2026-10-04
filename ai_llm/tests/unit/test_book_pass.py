@@ -1,4 +1,4 @@
-"""Unit tests for app.nodes.book_pass — glossary/index-term/preface generation.
+"""Unit tests for app.nodes.book_pass — glossary/index-term generation.
 
 No real LLM calls: app.nodes.book_pass.call_writer is monkeypatched.
 """
@@ -82,56 +82,84 @@ def test_run_glossary_retries_then_degrades_to_empty_on_unparseable_response(
     assert glossary == []
 
 
-def test_run_index_terms_parses_and_writes_terms(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        book_pass_node,
-        "call_writer",
-        lambda prompt, **kw: json.dumps(["Gradient Descent", "Backpropagation"]),
+def test_index_terms_come_from_glossary_terms_in_the_chapter_and_its_bold_terms(tmp_path, monkeypatch):
+    def fail(prompt, **kw):
+        raise AssertionError("index terms must not call the LLM")
+
+    monkeypatch.setattr(book_pass_node, "call_writer", fail)
+    notes = (
+        "## Training\n"
+        "**Gradient descent** lowers the loss. Backpropagation computes it.\n"
+        "- A **learning rate** that is too big overshoots.\n"
+        "- **gradient descent** again, and a **very long bold sentence that is not a term**.\n"
     )
 
-    terms = book_pass_node.run_index_terms("vid1", "Some chapter notes.", tmp_path)
+    terms = book_pass_node.run_index_terms(
+        "vid1", notes, tmp_path, glossary_terms=["Backpropagation", "Softmax"]
+    )
 
-    assert terms == ["Gradient Descent", "Backpropagation"]
+    assert terms == ["Backpropagation", "Gradient descent", "learning rate"]
     payload = json.loads(
         (tmp_path / "work" / "book_pass" / "index_terms_vid1.json").read_text(encoding="utf-8")
     )
     assert payload == terms
 
 
-def test_run_index_terms_dedupes_case_insensitively(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        book_pass_node,
-        "call_writer",
-        lambda prompt, **kw: json.dumps(["Gradient Descent", "gradient descent"]),
-    )
-
-    terms = book_pass_node.run_index_terms("vid1", "notes", tmp_path)
-
-    assert terms == ["Gradient Descent"]
+def _chapter(index, size=1000):
+    return {"title": f"Chapter {index}", "notes": "x" * size}
 
 
-def test_run_index_terms_degrades_to_empty_list_on_unparseable_response(tmp_path, monkeypatch):
-    monkeypatch.setattr(book_pass_node, "call_writer", lambda prompt, **kw: "not json at all")
+def test_index_terms_are_capped_per_chapter():
+    notes = " ".join(f"**Term {i}**" for i in range(30))
 
-    terms = book_pass_node.run_index_terms("vid1", "notes", tmp_path)
-
-    assert terms == []
+    assert len(book_pass_node.index_terms_from_notes(notes, [])) == 10
 
 
-def test_run_preface_writes_file_and_includes_every_chapter_title(tmp_path, monkeypatch):
-    captured = {}
+def test_glossary_batches_split_a_large_book_in_order_and_keep_small_ones_whole():
+    small = [_chapter(i) for i in range(5)]
+    assert book_pass_node._glossary_batches(small) == [small]
+
+    big = [_chapter(i, size=25_000) for i in range(6)]  # 25k chars each, 60k per batch
+    batches = book_pass_node._glossary_batches(big)
+
+    assert [len(batch) for batch in batches] == [2, 2, 2]
+    assert [c for batch in batches for c in batch] == big
+
+
+def test_run_glossary_on_a_13_hour_book_makes_one_call_per_batch_and_merges_and_dedupes(
+    tmp_path, monkeypatch
+):
+    chapters = [_chapter(i, size=25_000) for i in range(6)]
+    prompts = []
 
     def fake_call_writer(prompt, **kw):
-        captured["prompt"] = prompt
-        return "This book covers neural networks from the ground up."
+        prompts.append(prompt)
+        batch_number = len(prompts)
+        return json.dumps(
+            [
+                {"term": "Shared Term", "definition": f"from batch {batch_number}"},
+                {"term": f"Term {batch_number}", "definition": "d"},
+            ]
+        )
 
     monkeypatch.setattr(book_pass_node, "call_writer", fake_call_writer)
 
-    chapters = [{"title": "Vectors"}, {"title": "Gradient Descent"}]
-    path = book_pass_node.run_preface(chapters, tmp_path)
+    glossary = book_pass_node.run_glossary(chapters, tmp_path)
 
-    assert path == tmp_path / "work" / "book_pass" / "preface.md"
-    assert path.exists()
-    assert "Vectors" in captured["prompt"]
-    assert "Gradient Descent" in captured["prompt"]
-    assert "This book covers neural networks" in path.read_text(encoding="utf-8")
+    assert len(prompts) == 3  # not one giant prompt with all 150k characters
+    assert all(len(prompt) < 70_000 for prompt in prompts)
+    terms = [entry["term"] for entry in glossary]
+    assert terms.count("Shared Term") == 1
+    assert {"Term 1", "Term 2", "Term 3"} <= set(terms)
+
+
+def test_run_glossary_keeps_the_other_batches_when_one_batch_never_returns_json(
+    tmp_path, monkeypatch
+):
+    chapters = [_chapter(i, size=40_000) for i in range(3)]  # 3 batches
+    answers = iter(["not json", "still not json", '[{"term": "Kept", "definition": "d"}]'])
+    monkeypatch.setattr(book_pass_node, "call_writer", lambda prompt, **kw: "not json" if "Chapter 0" in prompt else '[{"term": "Kept", "definition": "d"}]')
+
+    glossary = book_pass_node.run_glossary(chapters, tmp_path)
+
+    assert [entry["term"] for entry in glossary] == ["Kept"]

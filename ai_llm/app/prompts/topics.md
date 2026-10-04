@@ -1,7 +1,14 @@
 You are extracting the list of distinct topics covered in one transcript
-chunk of an educational YouTube video, to plan a book chapter later.
+chunk of a YouTube video -- a lesson, a podcast conversation or a comedy
+show -- to plan a book chapter later. For a podcast, a topic is a subject
+the people discuss; for a comedy show, a topic is a bit (the subject of a
+run of jokes, e.g. "Flying with kids").
 
 Rules:
+- Always respond in English, regardless of what language the transcript
+  below is in. Translate topic names into English rather than copying the
+  transcript's own script/language — this book's templates render in a
+  Latin-script font that cannot display every language's script.
 - Use only facts and topic names that actually appear in the transcript below.
 - Never invent a topic that is not discussed in this transcript.
 - Identify the MAJOR topics only — group related points, asides, and

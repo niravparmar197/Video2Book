@@ -13,17 +13,32 @@ from typing import Any, Callable
 from app.config import Settings, load_settings
 
 WRITER_MODELS = {
-    "nvidia": "nvidia/nemotron-3-super-120b-a12b",
+    # nemotron-3-super-120b-a12b reached end of life 2026-10-03 (verified
+    # against the real API: a 410 Gone on every call) -- openai/gpt-oss-20b
+    # replaces it: verified live against NVIDIA NIM's actual model catalog
+    # (GET /v1/models) and smoke-tested directly, it's free on the same
+    # NIM catalog, answers in ~9s on a realistic chunk-sized prompt (vs.
+    # candidates like nemotron-3.5-lightning-30b-a3b, which spent 40s+
+    # narrating chain-of-thought without ever finishing even a trivial
+    # prompt), and returns a plain string response (not the multi-part
+    # content-block shape that previously corrupted the book -- see
+    # _extract_text). Several other NIM-listed candidates (nemotron-
+    # nano-3-30b-a3b, llama-3.1-nemotron-51b/70b-instruct, mistral-large-
+    # 2-instruct) 404'd: listed in the catalog but not actually deployed
+    # for this account.
+    "nvidia": "openai/gpt-oss-20b",
     "gemini": "gemini-3.8-flash",
 }
 
-# nemotron-3-super is a reasoning model: for a full 30-minute-chunk transcript
-# it can spend several thousand tokens thinking before it ever emits the
-# final answer. A low completion cap or a short HTTP timeout truncates that
-# mid-thought and produces unparseable output, not a real provider failure —
-# verified empirically against the real API. This pipeline runs as a batch
-# job (root AGENTS.md: "30-hour playlist finishes overnight"), so trading
-# per-call latency for a reliably complete response is the right call here.
+# A reasoning model can spend several thousand tokens thinking before it
+# ever emits the final answer on a full 30-minute-chunk transcript (true of
+# some NIM catalog models, though not the current default above). A low
+# completion cap or a short HTTP timeout truncates that mid-thought and
+# produces unparseable output, not a real provider failure — verified
+# empirically against the real API. This pipeline runs as a batch job (root
+# AGENTS.md: "30-hour playlist finishes overnight"), so trading per-call
+# latency for a reliably complete response is the right call regardless of
+# which model is configured.
 MAX_OUTPUT_TOKENS = 16384
 REQUEST_TIMEOUT_SECONDS = 280
 
@@ -122,8 +137,34 @@ def _client_for(provider: str, settings: Settings) -> Any:
 
 
 def _extract_text(response: Any) -> str:
+    """Pull the plain text out of a LangChain chat response.
+
+    `response.content` is usually a plain string, but some providers can
+    return a list of content blocks instead -- e.g. [{"type": "text",
+    "text": "...", "extras": {"signature": "..."}}] -- when extra
+    metadata (observed from Gemini: a "thought signature" block) rides
+    along with the real text. Falling back to str(content) in that case
+    dumped the raw Python repr of that whole structure -- extras/
+    signature blob included -- straight into a real compiled book
+    (verified against a real PDF: a chapter's "notes" was literally
+    "[{'type': 'text', 'text': '...', 'extras': {'signature': '...'}}]").
+    Every call_writer call (topics, plan merge, glossary, preface, write,
+    verify) shares this one extraction path, so this also explains
+    downstream JSON-parsing nodes degrading to empty results: that text
+    can never parse as JSON either, regardless of the prompt or language.
+    """
     content = getattr(response, "content", response)
-    return content if isinstance(content, str) else str(content)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block if isinstance(block, str) else block["text"]
+            for block in content
+            if isinstance(block, str) or isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+        if parts:
+            return "".join(parts)
+    return str(content)
 
 
 def _call_once(

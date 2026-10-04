@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,17 @@ def _write_fake_pdf(tmp_path: Path, book_id: str, content: bytes = b"%PDF-1.4 fa
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return path
+
+
+def _mark_outline_ready(monkeypatch, tmp_path: Path, book_id: str) -> None:
+    """The book got past its plan phase (outline.json exists), so a retry
+    resumes the render graph."""
+    monkeypatch.setattr(
+        run_book_job, "settings", dataclasses.replace(run_book_job.settings, output_root=str(tmp_path))
+    )
+    outline = tmp_path / book_id / "outline.json"
+    outline.parent.mkdir(parents=True, exist_ok=True)
+    outline.write_text("[]", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -342,6 +354,7 @@ async def test_process_run_book_retry_passes_the_shared_postgres_checkpointer(
     db_session.refresh(book)
 
     fake_pdf = _write_fake_pdf(tmp_path, book.id)
+    _mark_outline_ready(monkeypatch, tmp_path, book.id)
     captured = {}
 
     def fake_resume_book(output_dir, checkpointer):
@@ -363,6 +376,7 @@ async def test_process_run_book_retry_calls_resume_book(monkeypatch, db_session,
     db_session.refresh(book)
 
     fake_pdf = _write_fake_pdf(tmp_path, book.id, b"%PDF-1.4 retry success")
+    _mark_outline_ready(monkeypatch, tmp_path, book.id)
     calls = []
 
     def fake_resume_book(output_dir, checkpointer):
@@ -381,3 +395,107 @@ async def test_process_run_book_retry_calls_resume_book(monkeypatch, db_session,
     assert book.status == "done"
     assert book.pdf_path == expected_key
     assert not fake_pdf.exists()
+
+
+async def test_process_run_book_plan_renders_inline_when_review_outline_is_false(
+    monkeypatch, db_session, user, tmp_path
+):
+    """REVIEW_OUTLINE=false (root AGENTS.md setting) skips the human
+    outline-review gate: a successful plan phase renders right away in the
+    same job and lands the book in `done`, instead of waiting in
+    outline_ready for a click."""
+    monkeypatch.setenv("REVIEW_OUTLINE", "false")
+    book = Book(url="https://youtu.be/x", status="queued", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    monkeypatch.setattr(
+        run_book_job,
+        "ai_llm_run_plan",
+        lambda url, output_dir, force, checkpointer: (
+            [{"video_id": "vid1", "title": "T", "url": "https://youtu.be/vid1", "duration_seconds": 100}],
+            [{"id": "chapter:vid1", "video_id": "vid1", "title": "T", "order": 1, "skip": False, "locked": False}],
+        ),
+    )
+    pdf = _write_fake_pdf(tmp_path, book.id)
+    render_calls = []
+
+    def fake_run_book(url, output_dir, force, checkpointer):
+        render_calls.append(url)
+        return pdf
+
+    monkeypatch.setattr(run_book_job, "ai_llm_run_book", fake_run_book)
+
+    job = _fake_job(book.id, "https://youtu.be/x", attempts_made=0, attempts=3, phase="plan")
+    result = await process_run_book(job)
+
+    db_session.refresh(book)
+    assert render_calls == ["https://youtu.be/x"]
+    assert book.status == "done"
+    assert book.pdf_path
+    assert result["pdf_path"] == book.pdf_path
+
+
+async def test_process_run_book_plan_stops_at_outline_ready_when_review_outline_is_true(
+    monkeypatch, db_session, user
+):
+    monkeypatch.setenv("REVIEW_OUTLINE", "true")
+    book = Book(url="https://youtu.be/x", status="queued", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    monkeypatch.setattr(
+        run_book_job,
+        "ai_llm_run_plan",
+        lambda url, output_dir, force, checkpointer: (
+            [{"video_id": "vid1", "title": "T", "url": "https://youtu.be/vid1", "duration_seconds": 100}],
+            [{"id": "chapter:vid1", "video_id": "vid1", "title": "T", "order": 1, "skip": False, "locked": False}],
+        ),
+    )
+
+    def must_not_render(*args, **kwargs):
+        raise AssertionError("render must wait for outline review when REVIEW_OUTLINE=true")
+
+    monkeypatch.setattr(run_book_job, "ai_llm_run_book", must_not_render)
+
+    job = _fake_job(book.id, "https://youtu.be/x", attempts_made=0, attempts=3, phase="plan")
+    await process_run_book(job)
+
+    db_session.refresh(book)
+    assert book.status == "outline_ready"
+
+
+async def test_retry_of_a_book_that_failed_in_its_plan_phase_reruns_the_plan(
+    monkeypatch, db_session, user, tmp_path
+):
+    # No outline.json: the book failed while planning. Resuming the render graph
+    # from that checkpoint never reaches render (it died with KeyError
+    # 'pdf_path'), so the retry must run the plan phase again.
+    monkeypatch.setattr(
+        run_book_job, "settings", dataclasses.replace(run_book_job.settings, output_root=str(tmp_path))
+    )
+    book = Book(url="https://youtu.be/x", status="failed", error_message="'channel'", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+
+    def resume_must_not_run(*args, **kwargs):
+        raise AssertionError("a plan-phase failure must not resume the render graph")
+
+    planned = []
+    monkeypatch.setattr(run_book_job, "ai_llm_resume_book", resume_must_not_run)
+    monkeypatch.setattr(
+        run_book_job,
+        "ai_llm_run_plan",
+        lambda url, output_dir, force, checkpointer: planned.append(url) or ([], []),
+    )
+
+    job = _fake_job(book.id, "https://youtu.be/x", attempts_made=0, attempts=3, phase="retry")
+    await process_run_book(job)
+
+    assert planned == ["https://youtu.be/x"]
+    db_session.refresh(book)
+    assert book.status == "outline_ready"
+    assert book.error_message is None

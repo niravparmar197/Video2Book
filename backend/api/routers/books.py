@@ -12,8 +12,13 @@ from datetime import datetime, time, timezone
 
 from api import storage
 from api.ai_llm_bridge import estimate_playlist as ai_llm_estimate_playlist
+from api.ai_llm_bridge import VideoUnavailableError
+from api.ai_llm_bridge import save_genre as ai_llm_save_genre
 from api.ai_llm_bridge import get_chapter_progress as ai_llm_get_chapter_progress
 from api.ai_llm_bridge import get_progress as ai_llm_get_progress
+from api.ai_llm_bridge import get_warnings as ai_llm_get_warnings
+from api.ai_llm_bridge import get_timings as ai_llm_get_timings
+from api.ai_llm_bridge import decided_book_kind as ai_llm_decided_book_kind
 from api.ai_llm_bridge import load_settings as ai_llm_load_settings
 from api.auth import get_current_user
 from api.checkpointer import get_checkpointer
@@ -113,7 +118,12 @@ async def create_book(
             ),
         )
 
-    estimates = await asyncio.to_thread(ai_llm_estimate_playlist, str(payload.url))
+    try:
+        estimates = await asyncio.to_thread(ai_llm_estimate_playlist, str(payload.url))
+    except VideoUnavailableError as error:
+        # A members-only/private/removed video is the user's input problem, not
+        # a server fault: say why instead of returning a bare 500.
+        raise HTTPException(status_code=422, detail=f"YouTube can't open this video: {error}")
     _check_over_budget(estimates)
     total_cost = sum(e.estimated_cost_usd for e in estimates)
 
@@ -123,6 +133,9 @@ async def create_book(
     db.add(book)
     db.commit()
     db.refresh(book)
+
+    if payload.genre != "auto":
+        ai_llm_save_genre(Path(settings.output_root) / book.id, payload.genre)
 
     _check_daily_spend_alert(db)
 
@@ -215,7 +228,12 @@ async def _progress_events(book_id: str) -> AsyncIterator[str]:
     book-wide node position stays put (e.g. chapter 4 of 12 during one long
     `write` node run) now counts as a real change (sprints/v9). Yields one
     final `done`/`failed` event and stops once the book leaves its
-    in-flight statuses (sprints/v7 Task 7)."""
+    in-flight statuses (sprints/v7 Task 7). Also includes a `warnings`
+    array (sprints/v11) -- non-fatal degradations ai_llm logs and
+    continues past (e.g. a chunk's topics extraction giving up on a
+    malformed LLM response) previously only reached worker stdout, with
+    no way for the frontend to know a book's output had quietly degraded.
+    """
     output_dir = Path(settings.output_root) / book_id
     checkpointer = get_checkpointer()
     last_sent = None
@@ -230,9 +248,11 @@ async def _progress_events(book_id: str) -> AsyncIterator[str]:
         if book is None:
             return
 
+        warnings = await asyncio.to_thread(ai_llm_get_warnings, output_dir)
+
         if book.status in _TERMINAL_STATUSES:
             event = "done" if book.status == "done" else "failed"
-            yield _sse(event, {"status": book.status})
+            yield _sse(event, {"status": book.status, "warnings": warnings})
             return
 
         phase = "plan" if book.status in _PLAN_STATUSES else "render"
@@ -241,11 +261,18 @@ async def _progress_events(book_id: str) -> AsyncIterator[str]:
         )
         chapters = await asyncio.to_thread(ai_llm_get_chapter_progress, output_dir)
         progress["chapters"] = chapters
+        progress["warnings"] = warnings
+        # The kind of book once decided ("Podcast Notes", ...) and seconds per
+        # finished step, so the progress screen can show both.
+        progress["book_kind"] = await asyncio.to_thread(ai_llm_decided_book_kind, output_dir)
+        progress["step_seconds"] = await asyncio.to_thread(ai_llm_get_timings, output_dir)
 
         key = (
             progress["current_node"],
             tuple(progress["completed_nodes"]),
             tuple((c["id"], c["status"], c["score"], c["attempts"]) for c in chapters),
+            len(warnings),
+            progress["book_kind"],
         )
         if key != last_sent:
             last_sent = key

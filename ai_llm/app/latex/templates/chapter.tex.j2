@@ -2,6 +2,9 @@
 
 {% for section in sections %}
 \section{ {{- section.heading -}} }
+{% if section.watch_link %}
+{\small\color{V2BAccent} {{ section.watch_link }} }\par
+{% endif %}
 {% for paragraph in section.paragraphs %}
 {{ paragraph }}
 
@@ -11,26 +14,26 @@
 
 {% endfor %}
 {% for figure in section.visual_figures %}
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
-\includegraphics[width=0.8\textwidth]{ {{- figure.relative_path -}} }
+\includegraphics[width=0.8\textwidth,height=0.4\textheight,keepaspectratio]{ {{- figure.relative_path -}} }
 \caption{ {{- figure.caption -}} }
 \end{figure}
 
 {% endfor %}
 {% for figure in section.screenshot_figures %}
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
-\includegraphics[width=0.8\textwidth]{ {{- figure.relative_path -}} }
+\includegraphics[width=0.8\textwidth,height=0.4\textheight,keepaspectratio]{ {{- figure.relative_path -}} }
 \caption{ {{- figure.caption -}} }
 \end{figure}
 
 {% endfor %}
 {% endfor %}
 {% for figure in figures %}
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
-\includegraphics[width=0.8\textwidth]{ {{- figure.relative_path -}} }
+\includegraphics[width=0.8\textwidth,height=0.4\textheight,keepaspectratio]{ {{- figure.relative_path -}} }
 \caption{ {{- figure.caption -}} }
 \end{figure}
 

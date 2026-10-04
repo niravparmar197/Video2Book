@@ -47,6 +47,23 @@ def _clean_tables():
 
 
 @pytest.fixture(autouse=True)
+def _default_video_genre(monkeypatch):
+    """Pin VIDEO_GENRE=lecture: with the default "auto", ai_llm's topics step
+    asks the real writer LLM what kind of video it is -- a network call no
+    test may make (the real-pipeline tests stub every other LLM call)."""
+    monkeypatch.setenv("VIDEO_GENRE", "lecture")
+
+
+@pytest.fixture(autouse=True)
+def _default_review_outline(monkeypatch):
+    """Pin REVIEW_OUTLINE=true for every test, independent of whatever a
+    developer's local ai_llm/.env says -- the plan-phase tests assert the
+    book stops at outline_ready, which REVIEW_OUTLINE=false would change.
+    Tests that exercise the skip-review path override this locally."""
+    monkeypatch.setenv("REVIEW_OUTLINE", "true")
+
+
+@pytest.fixture(autouse=True)
 def _default_playlist_estimate(monkeypatch):
     """POST /books/youtube now estimates a playlist before creating a Book
     (sprints/v8) -- a real network call to YouTube ai_llm's own

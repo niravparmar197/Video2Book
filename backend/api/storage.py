@@ -29,8 +29,18 @@ def _client():
         config=Config(
             signature_version="s3v4",
             connect_timeout=2,
-            read_timeout=5,
+            # read_timeout bounds a silent wait for the server, not the whole
+            # upload, but a large (tens of MB) PDF needs more than 5s of slack.
+            read_timeout=60,
             retries={"max_attempts": 2},
+            # boto3 >= 1.36 adds a CRC32 checksum to every upload part by
+            # default; S3Mock then rejects CompleteMultipartUpload ("The
+            # complete request must include the checksum for each part") for
+            # any PDF over the 8MB multipart threshold -- which is every book
+            # with a few dozen screenshots, and every long-video book. Only
+            # send checksums when an operation requires them.
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
         ),
     )
 

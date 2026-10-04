@@ -115,6 +115,7 @@ def run_topic_outline(ordered_topics: list[dict], output_dir: str | Path) -> lis
                 "level": topic.get("level", 1),
                 "needs": topic.get("needs", []),
                 "sources": topic.get("sources", []),
+                "covers": topic.get("covers", []),
                 "detail": f"level {topic.get('level', 1)}; sources: {', '.join(video_ids) or 'none'}",
             }
         )

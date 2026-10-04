@@ -38,6 +38,13 @@ class Settings:
 
     events_poll_seconds: float = float(os.environ.get("EVENTS_POLL_SECONDS", "2"))
 
+    # How many run_book jobs one worker process runs at once. At 1, a
+    # book's render waited behind another book's entire plan phase (7.5
+    # min measured live). Concurrent books share the CPU (Whisper) and the
+    # LLM rate limit (app/llm.py's process-wide pacer), so higher values
+    # trade per-book speed for less time waiting in line.
+    worker_concurrency: int = int(os.environ.get("WORKER_CONCURRENCY", "2"))
+
     # Observational only (sprints/v8) -- sums estimated_cost_usd across every
     # book created since UTC midnight and warns past this threshold. Can't
     # fire in production yet: every real estimated_cost_usd is 0.0 until a

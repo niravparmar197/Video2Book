@@ -53,3 +53,20 @@ def test_check_s3_false_when_unreachable(monkeypatch):
         ),
     )
     assert storage.check_s3() is False
+
+
+def test_a_pdf_over_the_multipart_threshold_uploads_with_s3mock(tmp_path):
+    # >8MB makes boto3 use multipart; with its default per-part CRC32 checksums
+    # S3Mock rejected CompleteMultipartUpload and the finished book failed to
+    # upload. Any book with dozens of screenshots (or a long video) is this big.
+    import os
+
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF-1.5\n" + os.urandom(12 * 1024 * 1024))
+
+    key = storage.upload_pdf("multipart-regression", big)
+    try:
+        head = storage._client().head_object(Bucket=storage.settings.s3_bucket, Key=key)
+        assert head["ContentLength"] == big.stat().st_size
+    finally:
+        storage.delete_pdf(key)

@@ -9,7 +9,7 @@ import shutil
 import pytest
 from PIL import Image
 
-from app.latex.tex import compile_chapter, render_book, render_chapter, render_topic_index
+from app.latex.tex import compile_chapter, render_book, render_chapter
 
 pytestmark = pytest.mark.skipif(
     shutil.which("latexmk") is None, reason="latexmk not installed on PATH"
@@ -129,26 +129,70 @@ def test_render_and_compile_with_a_real_subject_index(tmp_path):
     assert "neural network" in index_content
 
 
-def test_render_and_compile_full_book_with_preface_glossary_and_topic_index(tmp_path):
-    render_chapter(
-        "chapter1", "Chapter One", SAMPLE_NOTES, tmp_path, index_terms=["Gradient Descent"]
+def test_render_and_compile_full_book_with_glossary_and_callouts(tmp_path):
+    callouts = (
+        "\n> Key point: A ==layered== model.\n"
+        "> Example: One hidden layer.\n"
+        "> Watch out: Overfitting & 50% noise.\n"
     )
-    render_topic_index([{"title": "Chapter One"}], tmp_path)
-
-    preface_path = tmp_path / "preface.md"
-    preface_path.write_text("This book covers neural networks.\n\nEnjoy the read!\n", encoding="utf-8")
+    render_chapter(
+        "chapter1",
+        "Chapter One",
+        SAMPLE_NOTES + callouts,
+        tmp_path,
+        index_terms=["Gradient Descent"],
+    )
 
     main_tex_path = render_book(
         ["chapter1"],
         tmp_path,
-        preface_path=preface_path,
         glossary_entries=[
             {"term": "Neural Network", "definition": "A layered computational model."}
         ],
-        include_topic_index=True,
     )
     pdf_path = compile_chapter(main_tex_path)
 
     assert pdf_path.exists()
     assert pdf_path.read_bytes().startswith(b"%PDF")
     assert pdf_path.stat().st_size > 5000
+
+
+def test_a_chapter_with_dozens_of_screenshots_in_one_section_still_compiles(tmp_path):
+    # A real 27-minute lecture produced 153 screenshots; with [h] placement
+    # LaTeX died with "Too many unprocessed floats" after all the LLM work.
+    from PIL import Image
+
+    shots = []
+    for index in range(60):
+        path = tmp_path / "assets" / f"s{index}.jpg"
+        path.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (320, 180), (index * 4 % 255, 90, 160)).save(path)
+        shots.append({"asset_path": str(path), "timestamp_seconds": index * 20})
+
+    render_chapter("c1", "Many screenshots", "## One section\nText.\n", tmp_path, screenshots=shots)
+    pdf_path = compile_chapter(render_book(["c1"], tmp_path))
+
+    assert pdf_path.read_bytes().startswith(b"%PDF")
+
+
+def test_youtube_links_in_screenshot_captions_and_sections_compile_and_are_clickable(tmp_path):
+    import fitz
+    from PIL import Image
+
+    shot = tmp_path / "assets" / "a_b-C_d-E1" / "000_00.jpg"
+    shot.parent.mkdir(parents=True)
+    Image.new("RGB", (320, 180), (40, 90, 160)).save(shot)
+
+    render_chapter(
+        "c1",
+        "Links",
+        "## Intro\nText.\n",
+        tmp_path,
+        screenshots=[{"asset_path": str(shot), "timestamp_seconds": 75}],
+        section_times=[("a_b-C_d-E1", 60.0)],
+    )
+    pdf_path = compile_chapter(render_book(["c1"], tmp_path))
+
+    uris = {link.get("uri") for page in fitz.open(pdf_path) for link in page.get_links()}
+    assert "https://youtu.be/a_b-C_d-E1?t=60" in uris
+    assert "https://youtu.be/a_b-C_d-E1?t=75" in uris
