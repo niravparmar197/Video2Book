@@ -440,6 +440,85 @@ def test_render_chapter_skips_a_term_not_present_in_the_chapter(tmp_path):
     assert r"\index{" not in content
 
 
+def test_index_markup_never_lands_inside_a_latex_command(tmp_path):
+    # A real book printed "ecalloutKey PointV2BRule..." as text: \index{not}
+    # had been put inside "\notecallout".
+    notes = (
+        "## Storage\n\n"
+        "> Key point: Store the file in object storage.\n\n"
+        "Do **not** keep blobs in another table; use object storages.\n"
+    )
+    content = render_chapter(
+        "vid1", "Title", notes, tmp_path, index_terms=["not", "Rule", "Object storage"]
+    ).read_text(encoding="utf-8")
+
+    assert r"\notecallout{Key Point}{V2BRule}" in content
+    assert r"not}\index{not}" in content or r"not\index{not}" in content
+    assert r"an\index" not in content
+    assert r"\index{Rule}" not in content  # only inside the callout's colour name
+    assert r"object storage\index{Object storage}" in content
+
+
+def test_callout_text_starts_with_a_capital(tmp_path):
+    notes = "## A\n\n> Key point: **idempotency keys** stop duplicates.\n\n> Example: iPhone apps retry.\n"
+    content = render_chapter("vid1", "Title", notes, tmp_path).read_text(encoding="utf-8")
+
+    assert "Idempotency keys" in content
+    assert "{iPhone apps retry.}" in content
+
+
+def test_headings_lose_markdown_markup_and_odd_highlights_still_render(tmp_path):
+    notes = (
+        "## ==Functional== and **Non-Functional** Requirements\n\n"
+        "- ===Atomic=== reservations and == spaced == highlights.\n"
+    )
+    content = render_chapter("vid1", "Title", notes, tmp_path).read_text(encoding="utf-8")
+
+    assert "Functional and Non-Functional Requirements" in content
+    assert "==" not in content
+    assert r"\colorbox{V2BHighlight}{\strut Atomic} reservations" in content
+    assert r"{\strut spaced} highlights" in content
+
+
+def test_a_box_drawn_table_becomes_a_real_table_and_its_duplicate_is_dropped(tmp_path):
+    notes = (
+        "## Schema\n\n"
+        "```\n"
+        "┌─────────┬───────┐\n"
+        "│ file_id │ owner │\n"
+        "├─────────┼───────┤\n"
+        "│ f1      │ u1    │\n"
+        "└─────────┴───────┘\n"
+        "```\n\n"
+        '```table\n{"headers": ["file_id", "owner"], "rows": [["f1", "u1"]]}\n```\n\n'
+        "```\n+--+ ascii art ─┐\n```\n"
+    )
+    content = render_chapter("vid1", "Title", notes, tmp_path).read_text(encoding="utf-8")
+
+    assert "│" not in content and "┌" not in content and "─" not in content
+    assert content.count(r"file\_id") == 1
+    assert "ascii art -+" in content
+
+
+def test_find_leaked_latex_reports_macro_names_printed_as_text(tmp_path):
+    from app.latex.tex import find_leaked_latex
+
+    class Done:
+        returncode = 0
+        stdout = "from 40:54 6ecalloutKey PointV2BRuleV2BCalloutGoldStore the actual file"
+
+    leaks = find_leaked_latex(tmp_path / "book.pdf", runner=lambda *a, **k: Done())
+    assert leaks and "V2BRule" in leaks[0]
+
+    Done.stdout = "A clean page about object storage."
+    assert find_leaked_latex(tmp_path / "book.pdf", runner=lambda *a, **k: Done()) == []
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("pdftotext")
+
+    assert find_leaked_latex(tmp_path / "book.pdf", runner=missing) == []
+
+
 
 
 
@@ -773,4 +852,69 @@ def test_the_answers_hint_is_italic_not_literal_underscores(tmp_path):
     chapter = render_chapter("c1", "Caching", _WITH_QUIZ, tmp_path).read_text(encoding="utf-8")
 
     assert r"\textit{Answers are at the back of the book.}" in chapter
-    assert "\_Answers" not in chapter
+    assert r"\_Answers" not in chapter
+
+
+def test_a_big_diagram_is_rendered_at_full_page_size(tmp_path, monkeypatch):
+    import json
+
+    from app.nodes import render as render_module
+
+    monkeypatch.setattr(render_module, "render_diagram", lambda data, path, **kw: path)
+    nodes = [f"Service {i}" for i in range(12)]
+    edges = [[nodes[i], nodes[i + 1]] for i in range(11)]
+    small = '{"nodes": ["A", "B"], "edges": [["A", "B"]]}'
+    notes = (
+        "## Big\nText.\n\n```diagram\n" + json.dumps({"title": "System", "nodes": nodes, "edges": edges}) + "\n```\n\n"
+        "## Small\nText.\n\n```diagram\n" + small + "\n```\n"
+    )
+
+    content = render_chapter("c1", "Ch", notes, tmp_path).read_text(encoding="utf-8")
+
+    big_section, small_section = content.split(r"\section{")[1:]
+    assert r"width=\textwidth,height=0.8\textheight" in big_section
+    assert r"width=0.8\textwidth,height=0.4\textheight" in small_section
+
+
+def test_a_callout_written_over_several_lines_is_one_box():
+    notes = (
+        "## Quota\n"
+        "> **Example:**\n"
+        "> A user has a 15 GB quota and uses 14 GB.\n"
+        "> Two 600 MB uploads start; only one fits.\n"
+        "\n"
+        "Text after.\n"
+    )
+
+    paragraphs = markdown_notes_to_sections(notes)[0].paragraphs
+
+    assert paragraphs[0] == (
+        r"\notecallout{Example}{V2BAccent}{V2BCalloutTeal}"
+        "{A user has a 15 GB quota and uses 14 GB. Two 600 MB uploads start; only one fits.}"
+    )
+    assert paragraphs[1] == "Text after."
+
+
+def test_an_unmatched_bold_marker_in_a_callout_is_not_printed():
+    paragraphs = markdown_notes_to_sections("## T\n> **Key point: Store files in S3.**\n")[0].paragraphs
+
+    assert paragraphs[0] == r"\notecallout{Key Point}{V2BRule}{V2BCalloutGold}{Store files in S3.}"
+
+
+def test_arrows_render_as_math_symbols_not_missing_glyphs():
+    assert escape_latex("session ID ↔ upload ID → S3") == (
+        r"session ID $\leftrightarrow$ upload ID $\rightarrow$ S3"
+    )
+
+
+def test_hashtags_leave_the_title_and_the_page_header_is_the_short_title(tmp_path):
+    from app.latex.tex import clean_book_title, header_title
+
+    title = "Design Google Drive in 45 Minutes | System Design Interview | HLD #systemdesign #interview #job"
+
+    assert clean_book_title(title) == "Design Google Drive in 45 Minutes | System Design Interview | HLD"
+    assert header_title(clean_book_title(title)) == "Design Google Drive in 45 Minutes"
+    render_chapter("c1", "Ch", "## T\nText.\n", tmp_path)
+    main = render_book(["c1"], tmp_path, book_title=title).read_text(encoding="utf-8")
+    assert "#systemdesign" not in main and r"\#systemdesign" not in main
+    assert "fancyhead[C]{" + r"\small\textsc{" + "\nDesign Google Drive in 45 Minutes\n" in main

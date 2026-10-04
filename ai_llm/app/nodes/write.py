@@ -25,6 +25,7 @@ from pathlib import Path
 
 from app.config import load_settings
 from app.llm import call_writer
+from app.nodes.chunk import parse_vtt
 from app.nodes.genre import DEFAULT_GENRE, load_genre
 from app.nodes.verify import (
     MIN_UNSUPPORTED_TO_ACT,
@@ -32,6 +33,9 @@ from app.nodes.verify import (
     clean_notes,
     drop_unspoken_quotes,
     find_unsupported_terms,
+    find_unspoken_acronyms,
+    find_unspoken_numbers,
+    fix_split_words,
     remove_unsupported_terms,
     run_verify,
     strip_ungrounded_visuals,
@@ -52,6 +56,40 @@ def _style_rules(genre: str) -> str:
     return "\n\n".join((_PROMPTS_DIR / name).read_text(encoding="utf-8").strip() for name in parts)
 
 logger = logging.getLogger(__name__)
+
+
+_MIN_TAKEAWAYS = 3
+_MIN_QUIZ_QUESTIONS = 2
+
+
+def _section_body(notes: str, heading: str) -> str | None:
+    match = re.search(
+        rf"^##\s+{re.escape(heading)}\s*$(.*?)(?=^##\s|\Z)", notes, re.IGNORECASE | re.MULTILINE | re.DOTALL
+    )
+    return match.group(1) if match else None
+
+
+def missing_parts(notes: str, genre: str) -> list[str]:
+    """Feedback for a lecture chapter that ends without its full closing
+    parts: a real chapter came out with one Key Takeaway, no Test Yourself
+    and so no answers at the back. Other genres have their own endings."""
+    if genre != "lecture":
+        return []
+    problems = []
+    takeaways = _section_body(notes, "Key Takeaways")
+    bullets = len(re.findall(r"^\s*[-*]\s+\S", takeaways or "", re.MULTILINE))
+    if bullets < _MIN_TAKEAWAYS:
+        problems.append(
+            f"The '## Key Takeaways' section needs at least {_MIN_TAKEAWAYS} bullets "
+            f"(it has {bullets}), each a key point from the notes above."
+        )
+    quiz = _section_body(notes, "Test Yourself")
+    questions = len(re.findall(r"^\s*\**Q\**\s*:", quiz or "", re.MULTILINE))
+    if questions < _MIN_QUIZ_QUESTIONS:
+        problems.append(
+            "Finish with a '## Test Yourself' section of 3-5 Q:/A: pairs answered from the notes."
+        )
+    return problems
 
 
 def _write_and_refine(
@@ -77,21 +115,40 @@ def _write_and_refine(
     for attempt in range(1, settings.max_refine_attempts + 1):
         raw_notes = strip_ungrounded_visuals(call_writer(prompt), transcript)
         notes = drop_unspoken_quotes(clean_notes(raw_notes), transcript).strip()
+        notes = fix_split_words(notes, notes + "\n" + transcript)
         result = run_verify(transcript, notes)
 
         # The judge is the same small model as the writer and passed a book
         # full of invented names (9/10), so check in code too: names that never
         # occur in the transcript fail the section, with the names as feedback.
+        problems = []
         unsupported = find_unsupported_terms(notes, transcript)
-        if len(unsupported) >= MIN_UNSUPPORTED_TO_ACT and result.score >= settings.pass_score:
+        if len(unsupported) >= MIN_UNSUPPORTED_TO_ACT:
+            problems.append(
+                "These names never appear in the transcript: "
+                + ", ".join(unsupported[:12])
+                + ". Delete every sentence, bullet, table row, diagram and example that "
+                "relies on them, and use only what the speaker actually said."
+            )
+        unspoken_numbers = find_unspoken_numbers(notes, transcript)
+        if unspoken_numbers:
+            problems.append(
+                "These numbers never appear in the transcript: "
+                + ", ".join(unspoken_numbers[:12])
+                + ". Use the speaker's exact numbers, or remove the claim."
+            )
+        unspoken_acronyms = find_unspoken_acronyms(notes, transcript)
+        if unspoken_acronyms:
+            problems.append(
+                "These terms never appear in the transcript: "
+                + ", ".join(unspoken_acronyms[:12])
+                + ". Remove the claims that rely on them."
+            )
+        problems.extend(missing_parts(notes, genre))
+        if problems:
             result = VerifyResult(
-                score=settings.pass_score - 1,
-                feedback=(
-                    "These names never appear in the transcript: "
-                    + ", ".join(unsupported[:12])
-                    + ". Delete every sentence, bullet, table row, diagram and example that "
-                    "relies on them, and use only what the speaker actually said."
-                ),
+                score=min(result.score, settings.pass_score - 1),
+                feedback=" ".join([*problems, result.feedback]).strip(),
             )
         score = result.score
 
@@ -236,12 +293,47 @@ def run_write(video_id: str, output_dir: str | Path) -> Path:
     return notes_path
 
 
+def _creator_text(output_dir: Path, video_ids: set[str]) -> str:
+    """The source videos' titles and YouTube chapter titles -- typed by the
+    creator, so they spell names and terms correctly where the auto-captions
+    mangle them ("item potency" for idempotency, in a real book)."""
+    videos_path = Path(output_dir) / "videos.json"
+    if not videos_path.exists():
+        return ""
+    texts: list[str] = []
+    for video in json.loads(videos_path.read_text(encoding="utf-8")):
+        if video.get("video_id") in video_ids:
+            texts.append(video.get("title", ""))
+            texts.extend(chapter.get("title", "") for chapter in video.get("chapters") or [])
+    return " | ".join(text for text in texts if text)
+
+
+# A sentence can start just before the creator's chapter marker.
+_RANGE_MARGIN_SECONDS = 10.0
+
+
+def _text_in_range(output_dir: Path, video_id: str, time_range: list[float]) -> str:
+    """The captions spoken inside `time_range` (a chapter planned from the
+    video's YouTube chapters), deduped like app.nodes.chunk does; "" when
+    the captions are missing so the caller falls back to the whole chunk."""
+    captions = sorted((Path(output_dir) / "work" / "captions").glob(f"{video_id}.*vtt"))
+    if not captions:
+        return ""
+    start, end = time_range[0] - _RANGE_MARGIN_SECONDS, time_range[1]
+    texts: list[str] = []
+    for cue in parse_vtt(captions[0].read_text(encoding="utf-8")):
+        if start <= cue.start_seconds < end and (not texts or texts[-1] != cue.text):
+            texts.append(cue.text)
+    return " ".join(texts)
+
+
 def _load_topic_prompt(
     title: str,
     sources: list[dict],
     covers: list[str],
     genre: str = DEFAULT_GENRE,
     other_chapters: list[str] | None = None,
+    creator_text: str = "",
 ) -> str:
     template = _TOPIC_PROMPT_PATH.read_text(encoding="utf-8")
     excerpts = "\n\n".join(
@@ -259,6 +351,8 @@ def _load_topic_prompt(
     # Several topic chapters share one 30-minute chunk, so the excerpts also
     # talk about the others. Unchecked, a real system-design book repeated the
     # upload and download flows in its "File Storage Strategy" chapter.
+    if creator_text:
+        covers_text += f"\nThe creator's own typed text (correct spellings): {creator_text}"
     if other_chapters:
         covers_text += (
             "\nOther chapters of this book cover: "
@@ -291,18 +385,28 @@ def run_write_topic(topic: dict, output_dir: str | Path) -> Path:
         if not chunk_path.exists():
             raise FileNotFoundError(f"missing chunk file for topic source: {chunk_path}")
         chunk = json.loads(chunk_path.read_text(encoding="utf-8"))
-        sources.append(
-            {"video_id": source["video_id"], "chunk_index": source["chunk_index"], "text": chunk["text"]}
-        )
+        text = chunk["text"]
+        if topic.get("time_range"):
+            text = _text_in_range(output_dir, source["video_id"], topic["time_range"]) or text
+        sources.append({"video_id": source["video_id"], "chunk_index": source["chunk_index"], "text": text})
+    # With a time range every source chunk gives the same text; keep it once.
+    unique: dict[str, dict] = {}
+    for source in sources:
+        unique.setdefault(source["text"], source)
+    sources = list(unique.values())
 
+    creator_text = _creator_text(output_dir, {source["video_id"] for source in sources})
     prompt = _load_topic_prompt(
         topic["title"],
         sources,
         topic.get("covers", []),
         load_genre(output_dir),
         topic.get("other_chapters"),
+        creator_text,
     )
-    transcript = "\n\n".join(source["text"] for source in sources)
+    # The creator's typed title/chapter names count as said for the checks
+    # ("HLD" is in the title even if the speaker says "high level design").
+    transcript = "\n\n".join([*(source["text"] for source in sources), creator_text]).strip()
     notes, score, attempts = _write_and_refine(prompt, transcript, load_genre(output_dir))
     notes = ensure_closing_section(notes, load_genre(output_dir))
 

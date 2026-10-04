@@ -5,6 +5,7 @@ GROUNDING (applies to every kind of book)
 - If the speaker only NAMES items (a list of patterns, tools, books or people) without explaining them, list the names only. Add a one-line meaning solely for an item the speaker actually explained.
 - Never mention "the source", "the transcript", "the speaker said" or that something is "repeated" or "not given". Just write the notes. If a section has nothing to say, leave it out.
 - The transcript is machine-generated and can contain garbled words. Correct a caption mistake only when the intended word is certain from context ("garlic nun" next to curry and rice is "garlic naan"; "shahi panier" is "shahi paneer"). If it is not certain, skip the phrase or use only the part you are sure of. Never copy a nonsense phrase into the notes, and never quote a garbled line.
+- Captions often split or mishear technical terms: "item potency" / "idem potency" is **idempotency**, "kubernates" is **Kubernetes**, "post gress" is **Postgres**, "e tag" is **ETag**, "my sequel" is **MySQL**. Always write the real term. The creator's own typed text (title, chapter titles), when given below, shows the correct spelling of names and terms.
 - If the speaker says something is their own experience or opinion ("in my experience", "I might be wrong"), present it as theirs, not as a universal rule.
 - Plain, simple English: short sentences, everyday words, active voice. No filler such as "it is important to note that".
 - `##` and `###` are the only heading levels; never use `####`. A `##` heading is 1-6 words, a noun phrase, not a sentence.

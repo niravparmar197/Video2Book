@@ -116,6 +116,7 @@ def run_topic_outline(ordered_topics: list[dict], output_dir: str | Path) -> lis
                 "needs": topic.get("needs", []),
                 "sources": topic.get("sources", []),
                 "covers": topic.get("covers", []),
+                **({"time_range": topic["time_range"]} if topic.get("time_range") else {}),
                 "detail": f"level {topic.get('level', 1)}; sources: {', '.join(video_ids) or 'none'}",
             }
         )

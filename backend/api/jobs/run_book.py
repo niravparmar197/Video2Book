@@ -120,6 +120,14 @@ def _finalize_pdf(book_id: str, local_pdf_path: Path) -> str:
     files) is left alone since a future retry still needs it. Returns the
     S3 object key, which is what `Book.pdf_path` is set to."""
     key = storage.upload_pdf(book_id, local_pdf_path)
+    # book.epub / book.md sit next to the PDF; optional extras, so a failed
+    # upload is logged and never fails a finished book.
+    try:
+        storage.upload_book_files(book_id, local_pdf_path.parent)
+    except Exception as exc:  # noqa: BLE001
+        get_logger(book_id=book_id, step="finalize").warning(
+            "could not upload book.epub/book.md", extra={"error": str(exc)}
+        )
     local_pdf_path.unlink(missing_ok=True)
     return key
 

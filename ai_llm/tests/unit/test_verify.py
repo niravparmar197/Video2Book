@@ -355,7 +355,91 @@ def test_quoted_text_in_a_bullet_is_dropped_if_invented_and_unquoted_if_paraphra
     assert "- Plain bullet stays." in result
 
 
+def test_unquoting_a_paraphrase_with_a_backslash_does_not_crash():
+    # The eval crashed: the quote text was used as a re.sub template ("bad escape").
+    notes = "## Bits\n- He orders “three garlic naan, three aloo roti, one shahi paneer \\d”.\n"
+
+    result = verify_node.drop_unspoken_quotes(notes, _SPEECH)
+
+    assert "- He orders three garlic naan, three aloo roti, one shahi paneer \\d." in result
+
+
 def test_quote_check_is_skipped_for_a_non_english_transcript():
     notes = '## T\n> Quote: "A translated line from the Hindi talk."\n'
 
     assert verify_node.drop_unspoken_quotes(notes, _HINDI) == notes
+
+
+def test_find_unspoken_numbers_flags_numbers_the_speaker_never_said():
+    transcript = "the input layer has 784 neurons for a 28 by 28 image and the output is 0.17"
+    notes = (
+        "## Input\n"
+        "- The input layer has **284** neurons, one per pixel of a 28 by 28 image (784 pixels).\n"
+        "- Step 3 of 5: S3, Q1 and a 4GB disk are names, not claims; 0.17 is spoken.\n"
+        '```chart\n{"type": "bar", "title": "T", "categories": ["a"], "values": [999]}\n```\n'
+    )
+
+    assert verify_node.find_unspoken_numbers(notes, transcript) == ["284"]
+
+
+def test_find_unspoken_numbers_skips_non_english_transcripts():
+    assert verify_node.find_unspoken_numbers("## T\n- 1500 years.\n", _HINDI) == []
+
+
+def test_small_numbers_with_units_and_all_numbers_in_examples_are_checked():
+    transcript = "the quota is 15 gb and the user has used about 14 gb then two uploads of 600 mb start"
+    notes = (
+        "## Quota\n"
+        "- Check 3 things before upload.\n"
+        "- A user with 1 GB used uploads 2 GB.\n"
+        "> Example: 1 GB used of 15 GB, upload 2 GB, then a 6 GB upload is denied.\n"
+        "> Example: 14 GB used, two 600 MB uploads; only one fits in 15 GB.\n"
+    )
+
+    # "2" is spoken ("two uploads"); 1 and 6 never are. 3 is a small count.
+    assert verify_node.find_unspoken_numbers(notes, transcript) == ["1", "6"]
+
+
+def test_find_unspoken_acronyms_catches_invented_ones_and_allows_caption_spellings():
+    transcript = "the client generates the uu id and we stream dvds through the cdn api and s3"
+    notes = "## Upload\n- The UUID is made on the client; DVD streams use the CDN API and S3. The ETag is a SHA hash.\n"
+
+    assert verify_node.find_unspoken_acronyms(notes, transcript) == ["SHA"]
+
+
+def test_fix_split_words_joins_a_caption_split_using_the_spelling_used_elsewhere():
+    notes = (
+        "> Key point: The upload uses idempotency to avoid duplicates.\n"
+        "The client creates an **Item Potency Key** and the server checks the item potency key.\n"
+        "Send the `item‑potency key` again."
+    )
+    fixed = verify_node.fix_split_words(notes, notes)
+    assert "**Idempotency Key**" in fixed
+    assert "checks the idempotency key" in fixed
+    assert "`idempotency key`" in fixed
+    assert "otency" not in fixed.replace("idempotency", "").replace("Idempotency", "")
+
+
+def test_fix_split_words_leaves_ordinary_phrases_and_identifiers_alone():
+    notes = (
+        "Store the session ID with the `sessionId` field. The network has two networks.\n"
+        "Each upload ID maps to an uploadId."
+    )
+    assert verify_node.fix_split_words(notes, notes) == notes
+
+
+def test_fix_split_words_does_nothing_without_the_correct_spelling():
+    notes = "Each row goes in the data base table."
+    assert verify_node.fix_split_words(notes, notes) == notes
+
+
+def test_fix_split_words_fixes_known_caption_errors_without_a_reference():
+    notes = "Item Potency Key holds a UU ID; store it in my sequel or post-gress, with the e tag."
+    assert verify_node.fix_split_words(notes, notes) == (
+        "Idempotency Key holds a UUID; store it in MySQL or Postgres, with the ETag."
+    )
+    assert verify_node.fix_split_words("Column `item_potency_key`.", "") == "Column `idempotency_key`."
+
+
+def test_fix_split_words_fixes_the_article_before_a_fixed_word():
+    assert verify_node.fix_split_words("It generates a item potency key.", "") == "It generates an idempotency key."

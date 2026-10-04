@@ -9,6 +9,10 @@ Score from 1 to 10 with this scale -- most decent sections land at 7 or 8:
 
 Rules:
 - Only a statement that adds a new fact, number, name or quote, or contradicts the transcript, is "invented". Rewording, summarising, a short plain-words explanation of a term the speaker uses, or a sensible heading is NOT invented and must not pull the score below 7 on its own.
+- An `> Example:` that is NOT a "Think of it like" analogy must be the speaker's own example; a made-up scenario with its own numbers, sizes or product names (e.g. a quota, a file size, a tool the speaker never mentioned) counts as invented.
+- Check every technical claim against the transcript, not just against general knowledge: a mechanism moved to the wrong flow (e.g. a download technique described for uploads), steps in an impossible order (retrying with a value that only exists after success), a different party doing the work than the speaker said, or an added quality ('cheap', 'essential') counts as invented.
+- Dropping the speaker's own worked example with numbers counts as "an important point missing".
+- Missing a job the speaker gives a component (e.g. what the gateway does) or the reason for a design decision the speaker explains is "an important point missing".
 - A `> Watch out:` line or a chart value the speaker never said counts as invented.
 - A `> Quote:` line must be the speaker's own words (fixing an obvious caption typo is fine); a reworded or made-up quote counts as invented.
 - A `## Test Yourself` list of Q:/A: pairs is intentional: each answer must be correct according to the transcript; a wrong answer counts as invented.

@@ -104,6 +104,26 @@ export async function downloadPdf(bookId: string): Promise<void> {
   URL.revokeObjectURL(objectUrl);
 }
 
+/** The book as an e-book (EPUB) or Markdown, written next to the PDF. */
+export type BookFileFormat = 'epub' | 'md';
+
+export async function downloadBookFile(bookId: string, format: BookFileFormat): Promise<void> {
+  const key = getApiKey();
+  const res = await fetch(`${API_BASE_URL}/books/${bookId}/download/${format}`, {
+    headers: key ? { 'X-API-Key': key } : {},
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, `${format === 'epub' ? 'EPUB' : 'Markdown'} is not available for this book`);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = `${bookId}.${format}`;
+  a.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
 /**
  * Consumes the book's SSE progress stream (GET /books/{id}/events).
  * Calling code owns the AbortController and stops the stream by aborting it.

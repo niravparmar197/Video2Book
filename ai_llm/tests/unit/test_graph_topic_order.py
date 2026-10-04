@@ -15,7 +15,7 @@ from app.nodes import topics as topics_module
 from app.nodes import write as write_module
 from app.youtube import VideoInfo
 
-SAMPLE_VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.500\nHello and welcome to this video.\n"
+SAMPLE_VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.500\nHello and welcome to this video about gradient descent.\n"
 
 TEST_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLfakeplaylist"
 
@@ -444,3 +444,26 @@ def test_youtube_chapter_titles_map_to_the_most_alike_book_chapter():
     )
 
     assert owners == [0, 1, None]
+
+
+def test_a_single_video_book_follows_the_videos_own_chapter_order():
+    planned = [  # needs/level order
+        {"title": "Functional Requirements", "sources": [{"video_id": "v", "chunk_index": 0}]},
+        {"title": "Database Schema", "sources": [{"video_id": "v", "chunk_index": 1}]},
+        {"title": "Upload Flow Design", "sources": [{"video_id": "v", "chunk_index": 0}]},
+        {"title": "User Roles", "sources": [{"video_id": "v", "chunk_index": 0}]},  # no YouTube chapter
+        {"title": "Download Flow Design", "sources": [{"video_id": "v", "chunk_index": 1}]},
+    ]
+    youtube_chapters = [
+        {"title": "Functional Requirements", "start_seconds": 150, "end_seconds": 210},
+        {"title": "Upload File Flow", "start_seconds": 540, "end_seconds": 1700},
+        {"title": "Download File Flow", "start_seconds": 1970, "end_seconds": 2400},
+        {"title": "Database Schema", "start_seconds": 2430, "end_seconds": 2650},
+    ]
+
+    ordered = graph_module._in_video_order(planned, youtube_chapters)
+
+    assert [t["title"] for t in ordered] == [
+        "Functional Requirements", "Upload Flow Design", "User Roles", "Download Flow Design", "Database Schema",
+    ]
+    assert [t["order"] for t in ordered] == [1, 2, 3, 4, 5]

@@ -36,7 +36,7 @@ FFMPEG_TIMEOUT_SECONDS = 300
 # Perceptual-hash Hamming distance at/below which two frames count as
 # near-duplicates (imagehash.phash default is a 64-bit hash; empirically a
 # handful of bits of difference is still visually "the same slide").
-HAMMING_DEDUPE_THRESHOLD = 4
+HAMMING_DEDUPE_THRESHOLD = 6  # ~90% of the 64 bits the same
 # Grayscale pixel-value standard deviation below which a frame is treated
 # as blank/solid-color (e.g. a black transition frame) and dropped.
 BLANK_STDDEV_THRESHOLD = 5.0
@@ -283,7 +283,7 @@ def dedupe_frames(
             if _edge_variance(grayscale) < blur_variance_threshold:
                 continue
 
-            phash = imagehash.phash(image)
+            phash = masked_phash(image)
 
         if any(phash - kept_hash <= hamming_threshold for kept_hash in kept_hashes):
             continue
@@ -292,6 +292,59 @@ def dedupe_frames(
         kept_hashes.append(phash)
 
     return kept
+
+
+# A presenter's webcam usually sits in a bottom corner; the speaker moving
+# there made two shots of the same slide hash apart. Both bottom corners are
+# greyed out before hashing so only the slide/drawing is compared.
+_WEBCAM_CORNER_WIDTH = 0.3
+_WEBCAM_CORNER_HEIGHT = 0.4
+
+
+def masked_phash(image: Image.Image) -> imagehash.ImageHash:
+    """Perceptual hash with the bottom-left and bottom-right corners masked."""
+    masked = image.convert("RGB")
+    width, height = masked.size
+    corner_width, top = int(width * _WEBCAM_CORNER_WIDTH), int(height * (1 - _WEBCAM_CORNER_HEIGHT))
+    masked.paste((128, 128, 128), (0, top, corner_width, height))
+    masked.paste((128, 128, 128), (width - corner_width, top, width, height))
+    return imagehash.phash(masked)
+
+
+def dedupe_book_screenshots(
+    chapters: list[dict], hamming_threshold: int = HAMMING_DEDUPE_THRESHOLD
+) -> None:
+    """Drop near-duplicate screenshots across the whole book, in place.
+
+    dedupe_frames only compares frames within one 30-minute chunk, so the
+    same slide (or the same drawing, a few strokes further on) shot in two
+    chunks reached the book twice. Per video, a screenshot is dropped when
+    any later one is nearly the same: the later frame of a drawing that is
+    being built up is the more complete one, and a "precap" that shows the
+    finished design at 0:00 belongs where the design is explained.
+    """
+    hashed: list[tuple[str, float, int, imagehash.ImageHash]] = []
+    for chapter in chapters:
+        for shot in chapter.get("screenshots") or []:
+            try:
+                with Image.open(shot["asset_path"]) as image:
+                    phash = masked_phash(image)
+            except OSError:
+                continue  # unreadable: leave it to the renderer
+            video_id = Path(shot["asset_path"]).parent.name
+            hashed.append((video_id, shot["timestamp_seconds"], id(shot), phash))
+    hashed.sort(key=lambda entry: entry[:2])
+
+    dropped: set[int] = set()
+    for index, (video_id, _, key, phash) in enumerate(hashed):
+        if any(
+            later_video_id == video_id and phash - later_phash <= hamming_threshold
+            for later_video_id, _, _, later_phash in hashed[index + 1 :]
+        ):
+            dropped.add(key)
+    for chapter in chapters:
+        if chapter.get("screenshots"):
+            chapter["screenshots"] = [shot for shot in chapter["screenshots"] if id(shot) not in dropped]
 
 
 # A whiteboard / drawing video changes a little at a time, so scene detection

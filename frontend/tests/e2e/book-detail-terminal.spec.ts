@@ -54,3 +54,29 @@ test('failed book shows the error message and a working retry button', async ({ 
   await expect.poll(() => retryCalled).toBe(true);
   await expect(page.getByTestId('book-detail-error-message')).not.toBeVisible();
 });
+
+test('a done book can also be downloaded as EPUB and Markdown', async ({ page }) => {
+  await installApiMocks(page);
+  await loginAs(page);
+
+  const bookId = 'book-done-formats';
+  const doneBook = { id: bookId, status: 'done', pdf_path: 'x/book.pdf', error_message: null };
+  await mockJson(page, 'POST', `${API_BASE}/books/youtube`, 201, doneBook);
+  await mockJson(page, 'GET', `${API_BASE}/books/${bookId}`, 200, doneBook);
+  await page.route(`${API_BASE}/books/${bookId}/download/epub`, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/epub+zip', body: Buffer.from('PK epub') })
+  );
+  await page.route(`${API_BASE}/books/${bookId}/download/md`, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Book' })
+  );
+
+  await page.getByTestId('new-book-url-input').fill('https://www.youtube.com/watch?v=abc');
+  await page.getByTestId('new-book-submit').click();
+  await expect(page.getByTestId('book-detail-download-epub')).toBeVisible();
+  await page.screenshot({ path: 'tests/screenshots/book-formats-01-done.png' });
+
+  const [epub] = await Promise.all([page.waitForEvent('download'), page.getByTestId('book-detail-download-epub').click()]);
+  expect(epub.suggestedFilename()).toBe(`${bookId}.epub`);
+  const [md] = await Promise.all([page.waitForEvent('download'), page.getByTestId('book-detail-download-md').click()]);
+  expect(md.suggestedFilename()).toBe(`${bookId}.md`);
+});

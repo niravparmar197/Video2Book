@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getBook, retryBook, cancelBook, downloadPdf, ApiError } from '../lib/api';
+import {
+  getBook,
+  retryBook,
+  cancelBook,
+  downloadPdf,
+  downloadBookFile,
+  ApiError,
+  type BookFileFormat,
+} from '../lib/api';
 import { ACTIVE_STATUSES, bookTitle } from '../lib/book';
 import { Book } from '../types';
 import { OutlineEditor } from './OutlineEditor';
@@ -94,6 +102,15 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
       setError(err instanceof ApiError ? err.message : 'Could not download PDF');
     } finally {
       setIsDownloading(false);
+    }
+  };
+
+  const handleDownloadFile = async (format: BookFileFormat) => {
+    setError(null);
+    try {
+      await downloadBookFile(bookId, format);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : `Could not download ${format}`);
     }
   };
 
@@ -201,6 +218,22 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
             <span className="material-symbols-outlined text-[20px]">download</span>
             {isDownloading ? 'Downloading...' : 'Download PDF'}
           </button>
+          <div className="flex justify-center gap-space-sm mt-space-sm">
+            <button
+              data-testid="book-detail-download-epub"
+              onClick={() => handleDownloadFile('epub')}
+              className="py-1.5 px-3 rounded-lg border border-[#c1c8c3] text-primary font-label-sm text-label-sm hover:bg-surface-container"
+            >
+              E-book (EPUB)
+            </button>
+            <button
+              data-testid="book-detail-download-md"
+              onClick={() => handleDownloadFile('md')}
+              className="py-1.5 px-3 rounded-lg border border-[#c1c8c3] text-primary font-label-sm text-label-sm hover:bg-surface-container"
+            >
+              Markdown
+            </button>
+          </div>
         </div>
       )}
 

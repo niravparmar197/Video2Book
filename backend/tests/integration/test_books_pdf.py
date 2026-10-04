@@ -84,3 +84,37 @@ def test_download_pdf_from_another_user_returns_404(
     _other_user, _key, other_headers = make_user()
     resp = client.get(f"/books/{book.id}/pdf", headers=other_headers)
     assert resp.status_code == 404
+
+
+def test_epub_and_markdown_are_uploaded_with_the_book_and_downloadable(
+    client, db_session, user, auth_headers, tmp_path
+):
+    book = Book(url="https://youtu.be/x", status="done", pdf_path="x/book.pdf", user_id=user.id)
+    db_session.add(book)
+    db_session.commit()
+    db_session.refresh(book)
+    (tmp_path / "book.epub").write_bytes(b"PK epub bytes")
+    (tmp_path / "book.md").write_bytes(b"# My Book\n")
+
+    assert storage.upload_book_files(book.id, tmp_path) == ["epub", "md"]
+    try:
+        for file_format, expected in (("epub", b"PK epub bytes"), ("md", b"# My Book\n")):
+            resp = client.get(f"/books/{book.id}/download/{file_format}", headers=auth_headers, follow_redirects=False)
+            assert resp.status_code == 307
+            assert urllib.request.urlopen(resp.headers["location"]).read() == expected
+    finally:
+        for file_format in ("epub", "md"):
+            storage._client().delete_object(Bucket=storage.settings.s3_bucket, Key=storage.book_file_key(book.id, file_format))
+
+
+def test_book_file_download_404s_for_unknown_format_missing_file_or_unfinished_book(
+    client, db_session, user, auth_headers
+):
+    done = Book(url="https://youtu.be/x", status="done", pdf_path="x/book.pdf", user_id=user.id)
+    running = Book(url="https://youtu.be/y", status="rendering", user_id=user.id)
+    db_session.add_all([done, running])
+    db_session.commit()
+
+    assert client.get(f"/books/{done.id}/download/docx", headers=auth_headers).status_code == 404
+    assert client.get(f"/books/{done.id}/download/epub", headers=auth_headers).status_code == 404  # never uploaded
+    assert client.get(f"/books/{running.id}/download/epub", headers=auth_headers).status_code == 404

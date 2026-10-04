@@ -49,6 +49,7 @@ from app.config import load_settings
 from app.export import write_epub, write_markdown_book
 from app.latex.tex import (
     compile_chapter,
+    find_leaked_latex,
     render_book,
     render_book_volumes,
     render_chapter,
@@ -56,24 +57,43 @@ from app.latex.tex import (
 )
 from app.nodes.align import chapter_section_times
 from app.nodes.book_pass import (
+    apply_architecture,
+    architecture_json_path,
+    drop_repeated_diagrams,
+    has_architecture_section,
+    remove_architecture_section,
     glossary_json_path,
+    ground_glossary,
     index_terms_json_path,
+    run_architecture,
     run_glossary,
     run_index_terms,
+    wants_architecture,
 )
 from app.nodes.chunk import run_chunk
 from app.nodes.fetch import run_fetch_playlist
-from app.nodes.frames import load_screenshots_for_sources, load_video_screenshots, run_frames
+from app.nodes.frames import (
+    dedupe_book_screenshots,
+    load_screenshots_for_sources,
+    load_video_screenshots,
+    run_frames,
+)
 from app.nodes.genre import BOOK_KINDS, genre_json_path, load_genre, run_genre
 from app.nodes.order import run_order_topics
 from app.nodes.outline import outline_json_path, run_outline, run_topic_outline
-from app.nodes.plan import plan_json_path, run_plan_topics, run_single_chunk_plan
+from app.nodes.plan import (
+    plan_json_path,
+    run_plan_topics,
+    run_single_chunk_plan,
+    run_youtube_chapter_plan,
+)
 from app.nodes.topics import (
     run_topics,
     topics_from_youtube_chapters,
     topics_output_path,
     write_topics,
 )
+from app.nodes.verify import fix_split_words
 from app.nodes.write import chapter_status_path, notes_output_path, run_write, run_write_topic
 
 
@@ -388,8 +408,29 @@ def _run_book_pass(chapters: list[dict], output_dir: str) -> dict:
         for chapter in chapters
     ]
     glossary_path = glossary_json_path(output_dir)
-    run_cached(glossary_path, lambda: run_glossary(chapters_with_notes, output_dir))
-    glossary = json.loads(glossary_path.read_text(encoding="utf-8"))
+    # The glossary and (for a talk that builds one overall system) the
+    # book-wide architecture diagram are independent LLM calls: run together.
+    architecture_path = architecture_json_path(output_dir)
+    tasks = [lambda: run_cached(glossary_path, lambda: run_glossary(chapters_with_notes, output_dir))]
+    if wants_architecture(chapters_with_notes):
+        tasks.append(
+            lambda: run_cached(architecture_path, lambda: run_architecture(chapters_with_notes, output_dir))
+        )
+    _map_parallel(tasks, lambda task: task())
+    architecture = (
+        json.loads(architecture_path.read_text(encoding="utf-8")).get("diagram")
+        if architecture_path.exists() and wants_architecture(chapters_with_notes)
+        else None
+    )
+    all_transcripts = " ".join(
+        json.loads(path.read_text(encoding="utf-8")).get("text", "")
+        for path in sorted((Path(output_dir) / "work" / "chunks").glob("*.json"))
+    )
+    glossary = ground_glossary(
+        json.loads(glossary_path.read_text(encoding="utf-8")),
+        all_transcripts,
+        "\n".join(chapter["notes"] for chapter in chapters_with_notes),
+    )
     glossary_terms = [entry["term"] for entry in glossary]
 
     # Index terms need no LLM call: the glossary terms each chapter mentions
@@ -408,6 +449,7 @@ def _run_book_pass(chapters: list[dict], output_dir: str) -> dict:
     return {
         "glossary": glossary,
         "index_terms_by_file_key": index_terms_by_file_key,
+        "architecture": architecture,
     }
 
 
@@ -428,6 +470,7 @@ def _render_chapters(
     output_dir: str,
     glossary_entries: list[dict] | None = None,
     book_title: str = "Video2Book",
+    architecture: dict | None = None,
 ) -> tuple[str, str]:
     """Render + compile a mode-agnostic chapter list into book.pdf (or
     book_vol<N>.pdf when the playlist crosses VOLUME_HOURS, sprints/v6
@@ -447,8 +490,30 @@ def _render_chapters(
     modes' render nodes.
     """
     file_keys: list[str] = []
+    all_notes = {
+        chapter["file_key"]: Path(chapter["notes_path"]).read_text(encoding="utf-8") for chapter in chapters
+    }
+    # A caption split ("Item Potency") one chapter copied is fixed with the
+    # spelling any other chapter used.
+    book_vocabulary = "\n".join(all_notes.values())
+    glossary_entries = [
+        {
+            **entry,
+            "term": fix_split_words(entry["term"], book_vocabulary),
+            "definition": fix_split_words(entry["definition"], book_vocabulary),
+        }
+        for entry in glossary_entries or []
+    ] or glossary_entries
+    seen_diagrams: list[set[str]] = []
+    # One Complete Architecture section per book: the last chapter's.
+    with_architecture = [chapter["file_key"] for chapter in chapters if has_architecture_section(all_notes[chapter["file_key"]])]
     for chapter in chapters:
-        notes = Path(chapter["notes_path"]).read_text(encoding="utf-8")
+        notes = fix_split_words(all_notes[chapter["file_key"]], book_vocabulary)
+        if with_architecture and chapter["file_key"] != with_architecture[-1]:
+            notes = remove_architecture_section(notes)
+        # Before the book-wide architecture goes in, so that one always stays.
+        notes = drop_repeated_diagrams(notes, seen_diagrams)
+        notes = apply_architecture(notes, architecture)
         render_chapter(
             chapter["file_key"],
             chapter["title"],
@@ -475,6 +540,7 @@ def _render_chapters(
             book_kind=BOOK_KINDS[load_genre(output_dir)],
         )
         pdf_path = compile_chapter(main_tex_path)
+        _warn_on_leaked_latex(pdf_path)
         book_pdf_path = Path(output_dir) / "book.pdf"
         shutil.copyfile(pdf_path, book_pdf_path)
         _write_exports(chapters, output_dir, book_title)
@@ -495,12 +561,20 @@ def _render_chapters(
     last_pdf_path = None
     for volume_index, main_tex_path in enumerate(volume_tex_paths, start=1):
         pdf_path = compile_chapter(main_tex_path)
-        volume_pdf_path = Path(output_dir) / f"book_vol{volume_index}.pdf"
+        _warn_on_leaked_latex(pdf_path)
+        volume_pdf_path =Path(output_dir) / f"book_vol{volume_index}.pdf"
         shutil.copyfile(pdf_path, volume_pdf_path)
         last_pdf_path = volume_pdf_path
 
     _write_exports(chapters, output_dir, book_title)
     return str(volume_tex_paths[-1]), str(last_pdf_path)
+
+
+def _warn_on_leaked_latex(pdf_path: str | Path) -> None:
+    """Log (into warnings.jsonl) any template macro printed as raw text."""
+    leaks = find_leaked_latex(pdf_path)
+    if leaks:
+        logger.warning("raw LaTeX printed in %s: %s", Path(pdf_path).name, leaks[:5])
 
 
 def _write_exports(chapters: list[dict], output_dir: str, book_title: str) -> None:
@@ -553,10 +627,12 @@ def _render_node(state: BookState) -> dict:
         for chapter in state["chapters"]
         if not chapter["skip"]
     ]
+    dedupe_book_screenshots(chapters)
     tex_path, pdf_path = _render_chapters(
         chapters,
         state["output_dir"],
         glossary_entries=book_pass.get("glossary"),
+        architecture=book_pass.get("architecture"),
         book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}
@@ -572,8 +648,11 @@ def _plan_node(state: BookState) -> dict:
     output_dir = state["output_dir"]
 
     def plan() -> None:
-        # One chunk in the whole book (a single short video): nothing to
-        # merge, so skip the LLM merge call and write one chapter.
+        # One video with its own YouTube chapters: those are the book's
+        # chapters. One chunk in the whole book (a single short video):
+        # nothing to merge, so skip the LLM merge call and write one chapter.
+        if run_youtube_chapter_plan(output_dir, state["videos"], load_settings().chunk_minutes):
+            return
         if run_single_chunk_plan(output_dir, state["videos"][0]["title"]) is None:
             run_plan_topics(output_dir)
 
@@ -583,7 +662,46 @@ def _plan_node(state: BookState) -> dict:
 
 def _order_node(state: BookState) -> dict:
     ordered = run_order_topics(state["output_dir"])
+    if len(state["videos"]) == 1:
+        ordered = _in_video_order(ordered, state["videos"][0].get("chapters") or [])
     return {"ordered_topics": ordered}
+
+
+def _in_video_order(topics: list[dict], youtube_chapters: list[dict]) -> list[dict]:
+    """A single video's chapters in the order the speaker covers them.
+
+    The needs/level sort is for merging a playlist; for one talk it shuffled
+    the speaker's own order (a reviewer: "your chapters do not follow the
+    video, so the links feel random"). Each topic is placed at the start time
+    of the YouTube chapter whose title matches it best, else at its first
+    source chunk; ties keep the planned order.
+    """
+    owners = _youtube_chapter_owners(topics, youtube_chapters) if youtube_chapters else []
+    start_of: dict[int, float] = {}
+    for youtube_chapter, owner in zip(youtube_chapters, owners):
+        if owner is not None:
+            start_of[owner] = min(start_of.get(owner, float("inf")), youtube_chapter["start_seconds"])
+
+    chunk_seconds = load_settings().chunk_minutes * 60
+    keys: list[tuple[float, int]] = []
+    previous = 0.0
+    for index, topic in enumerate(topics):
+        if topic.get("time_range"):
+            moment = topic["time_range"][0]  # planned from the YouTube chapters
+        elif index in start_of:
+            moment = start_of[index]
+        elif start_of:
+            # No YouTube chapter of its own: stay right after the topic the
+            # plan put before it.
+            moment = previous
+        else:
+            chunks = [source["chunk_index"] for source in topic.get("sources", [])]
+            moment = min(chunks) * chunk_seconds if chunks else previous
+        keys.append((moment, index))
+        previous = moment
+
+    reordered = [topics[index] for _, index in sorted(keys)]
+    return [dict(topic, order=position) for position, topic in enumerate(reordered, start=1)]
 
 
 def _topic_outline_node(state: BookState) -> dict:
@@ -718,7 +836,17 @@ def _place_screenshots_by_chapter_time(
     timed: list[tuple[float, str, int]] = []  # (start, video_id, chapter index)
     for index, chapter in enumerate(chapters):
         notes = Path(chapter["notes_path"]).read_text(encoding="utf-8")
-        chapter["section_times"] = chapter_section_times(notes, chapter.get("sources", []), output_dir)
+        # The YouTube chapters this book chapter matches bound where its
+        # sections can be spoken.
+        ranges = [
+            (youtube_chapter["start_seconds"], youtube_chapter["end_seconds"] or float("inf"))
+            for video_id, chapter_list in youtube_chapters.items()
+            for youtube_chapter, owner in zip(chapter_list, owners[video_id])
+            if owner == index
+        ]
+        chapter["section_times"] = chapter_section_times(
+            notes, chapter.get("sources", []), output_dir, ranges or None
+        )
         timed.extend(
             (start, video_id, index) for entry in chapter["section_times"] if entry for video_id, start in [entry]
         )
@@ -760,11 +888,13 @@ def _render_topic_node(state: BookState) -> dict:
         }
         for chapter, (hours, fresh_sources) in zip(active, hours_and_sources)
     ]
+    dedupe_book_screenshots(chapters)
     _place_screenshots_by_chapter_time(chapters, state["output_dir"], state["videos"])
     tex_path, pdf_path = _render_chapters(
         chapters,
         state["output_dir"],
         glossary_entries=book_pass.get("glossary"),
+        architecture=book_pass.get("architecture"),
         book_title=_book_title(state["videos"]),
     )
     return {"tex_path": tex_path, "pdf_path": pdf_path}

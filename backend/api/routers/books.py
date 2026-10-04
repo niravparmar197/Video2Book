@@ -216,6 +216,23 @@ async def download_pdf(
     return RedirectResponse(url, status_code=307)
 
 
+@router.get("/{book_id}/download/{file_format}")
+async def download_book_file(
+    book_id: str,
+    file_format: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> RedirectResponse:
+    """The book as an e-book (epub) or Markdown (md), next to the PDF."""
+    book = get_owned_book(db, book_id, user)
+    if file_format not in storage.BOOK_FILE_FORMATS:
+        raise HTTPException(status_code=404, detail=f"unknown format {file_format!r}")
+    key = storage.book_file_key(book_id, file_format)
+    if book.status != "done" or not await asyncio.to_thread(storage.object_exists, key):
+        raise HTTPException(status_code=404, detail=f"{file_format} not available")
+    return RedirectResponse(storage.presigned_url(key), status_code=307)
+
+
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 

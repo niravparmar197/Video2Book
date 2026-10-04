@@ -589,3 +589,105 @@ def test_topic_prompt_names_the_sibling_chapters_to_leave_out():
 
     assert "Other chapters of this book cover: Upload Flow High Level Design; Download Flow High Level Design" in prompt
     assert "write only about File Storage Strategy" in prompt
+
+
+def test_a_wrong_number_sends_the_section_back_naming_it(monkeypatch):
+    monkeypatch.setenv("MAX_REFINE_ATTEMPTS", "2")
+    prompts = []
+    attempts = iter(["## Input\n- The input layer has 284 neurons.", "## Input\n- The input layer has 784 neurons."])
+
+    def fake_call_writer(prompt, **kw):
+        prompts.append(prompt)
+        return next(attempts)
+
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+    monkeypatch.setattr(
+        write_module, "run_verify", lambda t, n: verify_module.VerifyResult(score=9, feedback="good")
+    )
+
+    notes, score, attempt_count = write_module._write_and_refine("prompt", "the input layer has 784 neurons")
+
+    assert attempt_count == 2 and "784" in notes
+    assert "These numbers never appear in the transcript: 284" in prompts[1]
+
+
+def test_topic_prompt_includes_the_creators_typed_titles_as_a_spelling_reference(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(output_dir, "vid1", 0, text="the item potency key stops duplicates", topics=["x"])
+    (output_dir / "videos.json").write_text(
+        json.dumps([{"video_id": "vid1", "title": "Design Google Drive", "chapters": [
+            {"title": "Idempotency Key", "start_seconds": 0, "end_seconds": 60}]}]),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_call_writer(prompt, **kw):
+        captured["prompt"] = prompt
+        return "## Idempotency Key\n- Stops duplicates."
+
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+
+    run_write_topic({"slug": "s", "title": "Uploads", "sources": [{"video_id": "vid1", "chunk_index": 0}]}, output_dir)
+
+    assert "The creator's own typed text (correct spellings): Design Google Drive | Idempotency Key" in captured["prompt"]
+    assert "idempotency" in captured["prompt"].lower()
+
+
+def test_a_chapter_with_a_time_range_is_written_from_that_stretch_only(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output"
+    _write_chunk_and_topics(output_dir, "vid1", 0, text="whole chunk text", topics=["x"])
+    _write_chunk_and_topics(output_dir, "vid1", 1, text="second chunk text", topics=["x"])
+    captions = output_dir / "work" / "captions"
+    captions.mkdir(parents=True, exist_ok=True)
+    (captions / "vid1.en.vtt").write_text(
+        "WEBVTT\n\n"
+        "00:00:05.000 --> 00:00:08.000\nthe precap teaser\n\n"
+        "00:03:20.000 --> 00:03:25.000\nstore files in object storage\n\n"
+        "00:03:25.000 --> 00:03:30.000\nstore files in object storage\n\n"
+        "00:05:00.000 --> 00:05:05.000\nthe client uploads to s3\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_call_writer(prompt, **kw):
+        captured["prompt"] = prompt
+        return "## Storage\n- Object storage."
+
+    monkeypatch.setattr(write_module, "call_writer", fake_call_writer)
+
+    run_write_topic(
+        {
+            "slug": "storage",
+            "title": "Where to store",
+            "sources": [{"video_id": "vid1", "chunk_index": 0}, {"video_id": "vid1", "chunk_index": 1}],
+            "time_range": [200.0, 290.0],
+        },
+        output_dir,
+    )
+
+    prompt = captured["prompt"]
+    assert prompt.count("store files in object storage") == 1
+    assert "precap" not in prompt and "uploads to s3" not in prompt
+    assert "whole chunk text" not in prompt
+
+
+# Captured at import: the conftest fixture stubs write.missing_parts per test.
+_real_missing_parts = write_module.missing_parts
+
+
+def test_missing_parts_flags_a_lecture_chapter_without_its_closing_parts():
+    thin = "## Storage\nText.\n\n## Key Takeaways\n- Only one point."
+    problems = _real_missing_parts(thin, "lecture")
+    assert len(problems) == 2
+    assert "at least 3 bullets (it has 1)" in problems[0]
+    assert "Test Yourself" in problems[1]
+
+
+def test_missing_parts_accepts_a_complete_lecture_chapter_and_other_genres():
+    complete = (
+        "## Storage\nText.\n\n## Key Takeaways\n- One.\n- Two.\n- Three.\n\n"
+        "## Test Yourself\nQ: Where?\nA: S3.\nQ: Why?\nA: Cost.\n"
+    )
+    assert _real_missing_parts(complete, "lecture") == []
+    assert _real_missing_parts("## Bit\nA joke.", "comedy") == []
+

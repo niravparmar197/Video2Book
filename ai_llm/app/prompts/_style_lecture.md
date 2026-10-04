@@ -14,13 +14,23 @@ One `##` heading per topic. Inside each topic, in this order:
 2. One sentence that defines the idea, then 2-4 bullets (`- `), one line each: the key facts, steps, rules or numbers. Do not restate a bullet or pad.
 3. If the topic has several named sub-points (e.g. four properties, three steps), give each its own `### Name` line (1-4 words, no colon) followed by one or two sentences.
 4. `> Example: ...` -- a concrete example that makes the idea click; give one for every topic that has a rule, a definition or a process:
-   - If the speaker gives an example, use it. Retell it step by step, keeping every number from the source.
-   - If the speaker gives none, write ONE short everyday analogy that starts with `Think of it like` (a shop, a road, a kitchen, a school). An analogy may contain no numbers, statistics, names or claims about the video -- it only helps the reader picture the idea. It is the only thing you may add yourself.
+   - If the speaker gives an example, use it. Retell it step by step, keeping every number from the source. A worked example with numbers (e.g. "15 GB allowed, 14 GB used, two 600 MB uploads at once -- only one may go through") is often the key idea of the talk: never drop it or replace it with an analogy.
+   - Keep the order of events and who holds what exactly as the speaker says: a value that only exists after a step succeeds (a receipt, an ID, a tag) cannot be used to retry that step, and a mechanism the speaker uses in one flow (e.g. range requests for downloads) must not be moved to another flow.
+   - If the speaker gives none and the idea is hard to picture, write ONE short everyday analogy (never for a plain list such as requirements) that starts with `Think of it like` (a shop, a road, a kitchen, a school). An analogy may contain no numbers, statistics, names or claims about the video -- it only helps the reader picture the idea. It is the only thing you may add yourself.
 5. `> Watch out: <the mistake, limit or exception the speaker warns about>` -- ONLY when the speaker clearly warns about a mistake or limit. Most topics have none: leave it out rather than invent a warning.
 6. A visual aid (see VISUAL AIDS) when the topic calls for one.
 
 - Keep the speaker's own memory tricks, shortcuts, analogies, notation details (what a symbol or shape means) and who-does-what distinctions. These are often the main teaching point; never drop them for generic definitions.
 - Capture the discussion, not only definitions: trade-offs, pros and cons, comparisons, opinions, recommendations and answers to questions. Put several options side by side in a ```table; put the speaker's final recommendation in a `> Key point:` line.
+- For every component the speaker introduces (a gateway, a service, a database, a queue), list each job they say it does -- e.g. "API Gateway: authentication, rate limiting, routing". Do not drop any of them.
+- For every design decision, give the decision AND the reason the speaker gives for it (e.g. "the client uploads straight to S3, so the large file never passes through our servers"). A decision without its reason is half a note.
+- Describe failures, retries and clean-up exactly as the speaker does: who retries, when something is deleted, what happens to half-finished work. Never state the opposite in another topic -- if two parts of the talk seem to differ, write what the speaker said in each and say which case each applies to.
+- Describe each technology with the speaker's own words for what it is and why it was chosen (e.g. "a distributed SQL database that scales horizontally", not just "a relational database"). Never add a quality the speaker did not state ("cheap", "essential for search").
+- A flow ```diagram must contain every step the text around it lists, in the same order.
+- Say each thing ONCE. Never give the same list as bullets, then as `> Key point:` boxes, then as a table -- pick the one form that fits. Explain a flow once, in the section the speaker explains it; elsewhere refer back to it in one sentence.
+- One name per component everywhere, the speaker's own (if they say "Kafka", never call it "Event Bus" in the text or a diagram).
+- Never invent sample data: no made-up file names, IDs, dates or sizes in tables or examples. A table of fields lists the fields the speaker names, without example rows unless the speaker gives them.
+- Status values, field names and API names: use exactly the names the speaker uses, the same way in every topic (if they say "uploading" and "uploaded", never write "in progress" or "completed" for them).
 
 VISUAL AIDS (diagrams and tables are what make notes quick to review)
 - Add ONE visual right after a topic's text whenever the topic describes a process or sequence of steps, a flow between states, a cause-and-effect chain, a structure or hierarchy, or a comparison of several items. Use a fenced block tagged ```diagram, ```table or ```chart containing exactly one JSON object. Never force one onto a topic without such content; every node, row and value must come from the source.

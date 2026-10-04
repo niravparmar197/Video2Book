@@ -191,3 +191,26 @@ def test_render_diagram_drops_arrow_only_edge_labels(tmp_path):
     assert '"A" -> "B";' in captured["input"]
     assert 'label="next step"' in captured["input"]
     assert 'label=">"' not in captured["input"]
+
+
+def test_render_diagram_merges_parallel_arrows_and_wraps_long_labels(tmp_path):
+    captured = {}
+
+    class _Done:
+        returncode = 0
+        stderr = ""
+
+    def fake_runner(args, **kwargs):
+        captured.update(kwargs)
+        return _Done()
+
+    edges = [["Client", "Upload Service", "1. request upload"], ["Client", "Upload Service", "9. complete upload"]]
+    edges += [[f"N{i}", f"N{i + 1}", "step"] for i in range(14)]
+    render_node.render_diagram({"nodes": ["Client", "Upload Service"], "edges": edges}, tmp_path / "d.png", runner=fake_runner)
+
+    dot = captured["input"]
+    assert dot.count('"Client" -> "Upload Service"') == 1
+    unwrapped = dot.replace("\\n", " ")
+    assert "1. request upload; 9. complete upload" in unwrapped
+    assert "\n" in dot  # the merged label wraps
+    assert "concentrate=true" in dot  # a busy graph bundles parallel edges

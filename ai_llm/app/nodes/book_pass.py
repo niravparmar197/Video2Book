@@ -12,6 +12,7 @@ book.
 from __future__ import annotations
 
 import contextvars
+import difflib
 import json
 import logging
 import re
@@ -166,6 +167,12 @@ _BOLD_TERM_RE = re.compile(r"\*\*([^*\n]{2,40})\*\*")
 _MAX_INDEX_TERMS = 10
 
 
+_EMPHASIS_WORDS = frozenset(
+    "never always only must should cannot first last before after every both each "
+    "also more most less least very same different important".split()
+)
+
+
 def index_terms_from_notes(notes: str, glossary_terms: list[str]) -> list[str]:
     """A chapter's subject-index terms with no LLM call: every glossary term
     the chapter mentions, then the terms it puts in **bold**, deduped
@@ -178,8 +185,19 @@ def index_terms_from_notes(notes: str, glossary_terms: list[str]) -> list[str]:
     lowered = notes.lower()
     candidates = [term for term in glossary_terms if term.lower() in lowered]
     for match in _BOLD_TERM_RE.finditer(notes):
-        term = match.group(1).strip().rstrip(":.,;")
-        if 1 <= len(term.split()) <= 4 and any(character.isalpha() for character in term):
+        raw = match.group(1).strip()
+        # "Object storage (Amazon S3)" is the "Object storage" entry.
+        term = re.sub(r"\s*\([^)]*\)", "", raw).rstrip(":.,;").strip()
+        # "**1. Request entry**" / "**Step 2:**" are step labels, not terms;
+        # they filled a real book's index with junk entries. So did words
+        # bolded for emphasis ("Do **not** store ...": an index entry "not").
+        if raw.endswith(":") or not term[:1].isalpha() or re.match(r"(?i)step\s*\d", term):
+            continue
+        if " " not in term and (
+            (len(term) < 4 and not term.isupper()) or term.lower() in _EMPHASIS_WORDS
+        ):
+            continue
+        if 1 <= len(term.split()) <= 4:
             candidates.append(term)
 
     terms: list[str] = []
@@ -202,3 +220,173 @@ def run_index_terms(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(terms, indent=2, ensure_ascii=False), encoding="utf-8")
     return terms
+
+
+# --- complete architecture ------------------------------------------------
+
+_ARCHITECTURE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "architecture.md"
+_ARCHITECTURE_HEADING_RE = re.compile(r"^##\s+Complete Architecture\s*$", re.IGNORECASE | re.MULTILINE)
+_ARCHITECTURE_MAX_CHARS = 60_000
+_ARCHITECTURE_MAX_NODES = 16
+_JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def architecture_json_path(output_dir: str | Path) -> Path:
+    return Path(output_dir) / "work" / "book_pass" / "architecture.json"
+
+
+def wants_architecture(chapters: list[dict]) -> bool:
+    """True when a chapter's writer added a `## Complete Architecture`
+    section -- its sign that the talk builds one overall design."""
+    return any(_ARCHITECTURE_HEADING_RE.search(chapter["notes"]) for chapter in chapters)
+
+
+def _valid_diagram(data: object) -> dict | None:
+    if not isinstance(data, dict) or data.get("none"):
+        return None
+    nodes = [str(node).strip() for node in data.get("nodes", []) if str(node).strip()]
+    edges = [
+        [str(part).strip() for part in edge[:3]]
+        for edge in data.get("edges", [])
+        if isinstance(edge, list) and len(edge) >= 2
+    ]
+    for edge in edges:  # an edge may name a node the list forgot
+        for name in edge[:2]:
+            if name not in nodes:
+                nodes.append(name)
+    if len(nodes) < 3 or not edges or len(nodes) > _ARCHITECTURE_MAX_NODES:
+        return None
+    return {"title": str(data.get("title") or "Complete Architecture"), "nodes": nodes, "edges": edges}
+
+
+def run_architecture(chapters: list[dict], output_dir: str | Path) -> dict | None:
+    """One diagram of the whole system, drawn from every chapter's notes.
+
+    A chapter writer only sees its own part of the transcript, so the
+    "Complete Architecture" it drew missed components explained elsewhere
+    (a real system-design book lost Kafka and its reconciliation service).
+    Saves {"diagram": {...} | null}; None when the notes describe no system
+    or the reply is unusable -- the chapter's own diagram is then kept.
+    """
+    text = "\n\n".join(f"=== {chapter['title']} ===\n{chapter['notes']}" for chapter in chapters)
+    prompt = _ARCHITECTURE_PROMPT_PATH.read_text(encoding="utf-8").format(
+        chapters=text[:_ARCHITECTURE_MAX_CHARS]
+    )
+    diagram = None
+    for attempt_prompt in (prompt, prompt + _RETRY_SUFFIX.replace("JSON array", "JSON object")):
+        match = _JSON_OBJECT_RE.search(call_writer(attempt_prompt))
+        try:
+            diagram = _valid_diagram(json.loads(match.group())) if match else None
+        except json.JSONDecodeError:
+            diagram = None
+        if diagram is not None:
+            break
+    if diagram is None:
+        logger.warning("complete-architecture diagram was unusable; keeping the chapter's own diagram")
+    path = architecture_json_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"diagram": diagram}, indent=2, ensure_ascii=False), encoding="utf-8")
+    return diagram
+
+
+def apply_architecture(notes: str, diagram: dict | None) -> str:
+    """Replace the diagram in the notes' `## Complete Architecture` section
+    with the book-wide one (or add it when the section has none)."""
+    heading = _ARCHITECTURE_HEADING_RE.search(notes)
+    if diagram is None or heading is None:
+        return notes
+    next_heading = re.search(r"^##\s", notes[heading.end():], re.MULTILINE)
+    end = heading.end() + next_heading.start() if next_heading else len(notes)
+    section = notes[heading.end():end]
+    block = "```diagram\n" + json.dumps(diagram, ensure_ascii=False) + "\n```"
+    fence = re.search(r"```diagram[ \t]*\n.*?\n[ \t]*```", section, re.DOTALL)
+    section = (
+        section[: fence.start()] + block + section[fence.end():] if fence else section.rstrip() + "\n\n" + block + "\n\n"
+    )
+    return notes[: heading.end()] + section + notes[end:]
+
+
+def has_architecture_section(notes: str) -> bool:
+    return _ARCHITECTURE_HEADING_RE.search(notes) is not None
+
+
+def remove_architecture_section(notes: str) -> str:
+    """Drop the notes' `## Complete Architecture` section. With one chapter
+    per YouTube chapter, two chapters each wrote one and both got the same
+    book-wide diagram; only the last chapter's is kept."""
+    heading = _ARCHITECTURE_HEADING_RE.search(notes)
+    if heading is None:
+        return notes
+    start = notes.rfind("\n", 0, heading.start()) + 1
+    next_heading = re.search(r"^##\s", notes[heading.end():], re.MULTILINE)
+    end = heading.end() + next_heading.start() if next_heading else len(notes)
+    return notes[:start] + notes[end:]
+
+
+_DIAGRAM_FENCE_RE =re.compile(r"\n?```diagram[ \t]*\n(.*?)\n[ \t]*```[ \t]*\n?", re.DOTALL)
+_SAME_DIAGRAM_OVERLAP = 0.8
+
+
+def drop_repeated_diagrams(notes: str, seen: list[set[str]]) -> str:
+    """Remove a ```diagram whose boxes (80%+ the same) were already drawn
+    earlier in the book; `seen` collects each kept diagram's node set and is
+    shared across chapters, in book order. A reviewer found the same upload
+    flow drawn as two figures in two chapters."""
+
+    def replace(match: re.Match) -> str:
+        try:
+            nodes = {str(node).strip().lower() for node in json.loads(match.group(1)).get("nodes", [])}
+        except (json.JSONDecodeError, AttributeError):
+            return match.group(0)
+        if len(nodes) >= 3:
+            for earlier in seen:
+                if len(nodes & earlier) / len(nodes | earlier) >= _SAME_DIAGRAM_OVERLAP:
+                    return "\n"
+            seen.append(nodes)
+        return match.group(0)
+
+    return _DIAGRAM_FENCE_RE.sub(replace, notes)
+
+
+def ground_glossary(glossary: list[dict], transcript: str, notes: str) -> list[dict]:
+    """Drop glossary terms the speaker never said, and merge near-duplicates.
+
+    The glossary is built from the notes, so anything the writer added slips
+    in: a real book listed "Redis" (never mentioned) and both "Item Potency
+    Key" (a caption error) and "Idempotency Key". A term is kept when each of
+    its words (4+ letters) was spoken -- a close caption spelling counts --
+    and of two near-identical terms the one the notes use most is kept.
+    Skipped for non-English transcripts.
+    """
+    from app.nodes.verify import _in_vocabulary, _is_english, _vocabulary
+
+    if not _is_english(transcript):
+        return glossary
+    vocabulary = _vocabulary(transcript)
+    # Captions split a term into two words ("item potency" for idempotency),
+    # so adjacent spoken words joined together count as spoken too.
+    words = re.findall(r"[a-z]+", transcript.lower())
+    vocabulary |= {first + second for first, second in zip(words, words[1:])}
+    spoken = [
+        entry
+        for entry in glossary
+        if all(_in_vocabulary(word, vocabulary) for word in re.findall(r"[A-Za-z]{4,}", entry["term"]))
+    ]
+
+    lowered_notes = notes.lower()
+
+    def squashed(term: str) -> str:
+        return re.sub(r"[^a-z]", "", term.lower())
+
+    kept: list[dict] = []
+    for entry in sorted(spoken, key=lambda item: -lowered_notes.count(item["term"].lower())):
+        if any(
+            difflib.SequenceMatcher(None, squashed(entry["term"]), squashed(other["term"])).ratio() >= 0.85
+            for other in kept
+        ):
+            continue
+        kept.append(entry)
+    dropped = len(glossary) - len(kept)
+    if dropped:
+        logger.warning("glossary: dropped %s unspoken or duplicate term(s)", dropped)
+    return sorted(kept, key=lambda item: item["term"].lower())

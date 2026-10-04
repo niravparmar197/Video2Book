@@ -129,3 +129,13 @@ def _reset_llm_rate_limit_pacing_state(monkeypatch):
     from app import llm as llm_module
 
     monkeypatch.setattr(llm_module, "_last_call_at", {})
+
+
+@pytest.fixture(autouse=True)
+def _no_closing_parts_check(monkeypatch):
+    """write.py fails a lecture chapter that lacks 3+ Key Takeaways and a
+    Test Yourself quiz. Most tests' fake writers return a one-line note, so
+    the check is off by default; test_write.py tests it directly."""
+    from app.nodes import write as write_module
+
+    monkeypatch.setattr(write_module, "missing_parts", lambda notes, genre: [])

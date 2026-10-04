@@ -16,7 +16,11 @@
 {% for figure in section.visual_figures %}
 \begin{figure}[H]
 \centering
+{% if figure.large %}
+\includegraphics[width=\textwidth,height=0.8\textheight,keepaspectratio]{ {{- figure.relative_path -}} }
+{% else %}
 \includegraphics[width=0.8\textwidth,height=0.4\textheight,keepaspectratio]{ {{- figure.relative_path -}} }
+{% endif %}
 \caption{ {{- figure.caption -}} }
 \end{figure}
 

@@ -215,3 +215,56 @@ def test_single_chunk_plan_does_not_use_an_unprintable_hindi_title(tmp_path):
     plan = plan_node.run_single_chunk_plan(tmp_path, "सालों की कहानी")
 
     assert plan[0]["title"] == "Rise of Moscow"
+
+
+def _write_chunk(output_dir, video_id, chunk_index, start, end):
+    chunks_dir = output_dir / "work" / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"chunk_index": chunk_index, "start_seconds": start, "end_seconds": end, "text": "x"}
+    (chunks_dir / f"{video_id}_{chunk_index:03d}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+_DRIVE_CHAPTERS = [
+    {"title": "Precap", "start_seconds": 0, "end_seconds": 153},
+    {"title": "Requirements", "start_seconds": 153, "end_seconds": 213},
+    {"title": "Where to store actual file?", "start_seconds": 213, "end_seconds": 387},
+    {"title": "Quick note", "start_seconds": 387, "end_seconds": 410},
+    {"title": "Upload File Flow HLD", "start_seconds": 410, "end_seconds": 1974},
+    {"title": "Database Schema", "start_seconds": 1974, "end_seconds": None},
+]
+
+
+def test_youtube_chapter_plan_follows_the_creators_chapters_in_order(tmp_path):
+    _write_chunk(tmp_path, "vid1", 0, 0.0, 1799.0)
+    _write_chunk(tmp_path, "vid1", 1, 1800.0, 2700.0)
+    video = {"video_id": "vid1", "duration_seconds": 2700, "chapters": _DRIVE_CHAPTERS}
+
+    plan = plan_node.run_youtube_chapter_plan(tmp_path, [video], chunk_minutes=30)
+
+    # The precap is dropped; the 23-second chapter is folded into the one before it.
+    assert [entry["title"] for entry in plan] == [
+        "Requirements", "Where to store actual file?", "Upload File Flow HLD", "Database Schema",
+    ]
+    assert plan[1]["time_range"] == [213.0, 410.0]
+    assert plan[2]["sources"] == [
+        {"video_id": "vid1", "chunk_index": 0}, {"video_id": "vid1", "chunk_index": 1},
+    ]
+    assert plan[3]["time_range"] == [1974.0, 2700.0]
+    assert json.loads(plan_node.plan_json_path(tmp_path).read_text(encoding="utf-8")) == plan
+
+
+def test_youtube_chapter_plan_is_skipped_without_usable_chapters(tmp_path):
+    _write_chunk(tmp_path, "vid1", 0, 0.0, 1799.0)
+    few = {"video_id": "vid1", "duration_seconds": 1800, "chapters": _DRIVE_CHAPTERS[:3]}
+    huge = {
+        "video_id": "vid1",
+        "duration_seconds": 30000,
+        "chapters": [
+            {"title": f"Part {n}", "start_seconds": n * 10000, "end_seconds": (n + 1) * 10000} for n in range(3)
+        ],
+    }
+
+    assert plan_node.run_youtube_chapter_plan(tmp_path, [few], 30) is None
+    assert plan_node.run_youtube_chapter_plan(tmp_path, [huge], 30) is None
+    assert plan_node.run_youtube_chapter_plan(tmp_path, [few, few], 30) is None
+    assert not plan_node.plan_json_path(tmp_path).exists()

@@ -11,6 +11,7 @@ only renders what it's given.
 from __future__ import annotations
 
 import re
+import textwrap
 import subprocess  # nosec B404 - only ever called with a fixed arg list, never shell=True
 from pathlib import Path
 from typing import Callable
@@ -23,6 +24,10 @@ import matplotlib.pyplot as plt  # noqa: E402 - must follow matplotlib.use()
 from app.latex.tex import escape_latex
 
 DOT_TIMEOUT_SECONDS = 30
+# Arrow labels wrap at this many characters; above this many arrows,
+# Graphviz bundles parallel edges (concentrate) so a big diagram stays legible.
+_LABEL_WRAP = 24
+_BUSY_GRAPH_EDGES = 12
 
 
 def render_table(data: dict) -> str:
@@ -95,11 +100,20 @@ def render_diagram(
         text = _DASHES_RE.sub("-", str(label)).strip()
         return text if re.search(r"\w", text) else ""
 
-    edges = [
+    raw_edges = [
         (canonical(edge[0]), canonical(edge[1]), clean_label(edge[2]) if len(edge) > 2 else "")
         for edge in data.get("edges", [])
         if len(edge) >= 2
     ]
+    # Several arrows between the same two boxes become one arrow with the
+    # labels joined: a real 12-box architecture had 29 arrows and was an
+    # unreadable tangle.
+    merged: dict[tuple[str, str], list[str]] = {}
+    for source, target, label in raw_edges:
+        labels = merged.setdefault((source, target), [])
+        if label and label not in labels:
+            labels.append(label)
+    edges = [(source, target, "; ".join(labels)) for (source, target), labels in merged.items()]
     if edges:
         # A box nothing connects to floats loose and breaks the flow (seen
         # in a real book: "Success"/"Failure" listed as nodes but only used
@@ -112,7 +126,8 @@ def render_diagram(
     rankdir = "LR" if len(nodes) <= 4 else "TB"
     dot_lines = [
         "digraph G {",
-        f'  graph [rankdir={rankdir}, bgcolor="white", pad="0.3", nodesep="0.5", ranksep="0.7", dpi=200];',
+        f'  graph [rankdir={rankdir}, bgcolor="white", pad="0.3", nodesep="0.5", ranksep="0.7", dpi=200,'
+        f' concentrate={"true" if len(edges) > _BUSY_GRAPH_EDGES else "false"}];',
         '  node [shape=box, style="rounded,filled", fillcolor="#E8EEF7", color="#1F3864",'
         ' penwidth=1.5, fontname="Helvetica", fontsize=13, fontcolor="#1F3864", margin="0.25,0.12"];',
         '  edge [color="#C9A24B", penwidth=1.8, arrowsize=0.9, fontname="Helvetica",'
@@ -121,7 +136,9 @@ def render_diagram(
     for node in nodes:
         dot_lines.append(f'  "{_dot_escape(node)}";')
     for source, target, label in edges:
-        attrs = f' [label="{_dot_escape(label)}"]' if label else ""
+        # Long (merged) labels wrap onto short lines instead of stretching the graph.
+        wrapped = "\\n".join(textwrap.wrap(_dot_escape(label), _LABEL_WRAP)) if label else ""
+        attrs = f' [label="{wrapped}"]' if label else ""
         dot_lines.append(f'  "{_dot_escape(source)}" -> "{_dot_escape(target)}"{attrs};')
     dot_lines.append("}")
     dot_source = "\n".join(dot_lines)

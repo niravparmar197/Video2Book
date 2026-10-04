@@ -130,6 +130,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Added {example['id']} ({example['genre']}) to {DATASET_PATH}")
         return 0
 
+    # Feedback quotes the notes (non-breaking hyphens, arrows); a Windows
+    # console's code page crashed the report after 14 minutes of scoring.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+
     load_settings()  # populate the environment from .env (API keys, EVAL_*)
     source, examples = load_examples()
     if not examples:

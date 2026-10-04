@@ -26,7 +26,7 @@ def _force_video_order(monkeypatch):
 SAMPLE_VTT = (
     "WEBVTT\n\n"
     "00:00:00.000 --> 00:00:02.500\n"
-    "Hello and welcome to this video about neural networks.\n"
+    "Hello and welcome to this video about neural networks and gradient descent.\n"
 )
 
 TEST_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLfakeplaylist"

@@ -220,7 +220,12 @@ def _fake_run_fetch_playlist_two_videos(url, output_dir):
 
 def _write_call_writer_two_videos(prompt, **kw):
     time.sleep(0.02)
-    return "## Notes\n\nContent."
+    # A complete lecture chapter: the core fails one without 3+ Key
+    # Takeaways and a Test Yourself quiz.
+    return (
+        "## Notes\n\nContent.\n\n## Key Takeaways\n- One.\n- Two.\n- Three.\n\n"
+        "## Test Yourself\nQ: What?\nA: Content.\nQ: Why?\nA: Notes.\n"
+    )
 
 
 _REFINE_STATE = {"vid1_judge_calls": 0}

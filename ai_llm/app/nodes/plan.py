@@ -180,6 +180,86 @@ def _degrade_to_unmerged_plan(chunk_topics: list[dict]) -> list[dict]:
     ]
 
 
+# --- one video with its own YouTube chapters ------------------------------
+
+# Not a topic: a teaser of the finished design, the channel intro, an ad.
+_SKIP_YOUTUBE_CHAPTER_RE = re.compile(
+    r"^\s*(?:pre-?cap|intro(?:duction)?|outro|trailer|preview|teaser|sponsor\w*|ad|ads|"
+    r"end ?screen|thank you|thanks for watching)\s*$",
+    re.IGNORECASE,
+)
+# A YouTube chapter this short is folded into the one before it.
+_MIN_YOUTUBE_CHAPTER_SECONDS = 45.0
+_MIN_YOUTUBE_CHAPTERS = 3
+# Longer than this, a chapter's transcript would not fit one writer call.
+_MAX_YOUTUBE_CHAPTER_CHUNKS = 2
+
+
+def run_youtube_chapter_plan(
+    output_dir: str | Path, videos: list[dict], chunk_minutes: int
+) -> list[dict] | None:
+    """Plan a single video from the creator's own YouTube chapters, with no
+    LLM call: one book chapter per YouTube chapter, in video order, each
+    with its `time_range` so it is written from that stretch of the talk only.
+
+    The merge-the-topics plan invented overlapping chapters for one talk
+    ("File Storage Design", "File Transfer Flows", "User and File
+    Uploading"), each written from the same 30-minute chunk -- a reviewer
+    found the upload flow explained six times. Returns None (use the LLM
+    plan) for a playlist, a video without enough chapters, or chapters too
+    long to write in one call.
+    """
+    if len(videos) != 1:
+        return None
+    video = videos[0]
+    youtube_chapters = video.get("chapters") or []
+    duration = float(video.get("duration_seconds") or 0)
+
+    kept: list[dict] = []
+    for index, chapter in enumerate(youtube_chapters):
+        start = float(chapter["start_seconds"])
+        following = youtube_chapters[index + 1]["start_seconds"] if index + 1 < len(youtube_chapters) else None
+        end = float(chapter.get("end_seconds") or following or duration or start)
+        if _SKIP_YOUTUBE_CHAPTER_RE.match(chapter.get("title", "")):
+            continue
+        if kept and end - start < _MIN_YOUTUBE_CHAPTER_SECONDS:
+            kept[-1]["end"] = end
+            continue
+        kept.append({"title": chapter.get("title", "").strip(), "start": start, "end": end})
+
+    max_seconds = _MAX_YOUTUBE_CHAPTER_CHUNKS * chunk_minutes * 60
+    if len(kept) < _MIN_YOUTUBE_CHAPTERS or any(entry["end"] - entry["start"] > max_seconds for entry in kept):
+        return None
+
+    output_dir = Path(output_dir)
+    chunk_ranges = []
+    for chunk_path in sorted((output_dir / "work" / "chunks").glob(f"{video['video_id']}_*.json")):
+        chunk = json.loads(chunk_path.read_text(encoding="utf-8"))
+        chunk_ranges.append((chunk["chunk_index"], chunk["start_seconds"], chunk["end_seconds"]))
+    if not chunk_ranges:
+        return None
+
+    plan = []
+    for entry in kept:
+        sources = [
+            {"video_id": video["video_id"], "chunk_index": chunk_index}
+            for chunk_index, chunk_start, chunk_end in chunk_ranges
+            if chunk_start < entry["end"] and entry["start"] <= chunk_end
+        ] or [{"video_id": video["video_id"], "chunk_index": chunk_ranges[-1][0]}]
+        plan.append(
+            {
+                "title": renderable_title(entry["title"], entry["title"] or "Notes"),
+                "level": 1,
+                "needs": [],
+                "sources": sources,
+                "covers": [],
+                "time_range": [entry["start"], entry["end"]],
+            }
+        )
+    plan_json_path(output_dir).write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+    return plan
+
+
 def run_single_chunk_plan(output_dir: str | Path, title: str) -> list[dict] | None:
     """Plan a book whose whole source is ONE chunk (a single video of at
     most CHUNK_MINUTES): one chapter titled `title` that covers every topic

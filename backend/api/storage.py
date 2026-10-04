@@ -70,6 +70,36 @@ def upload_pdf(book_id: str, local_path: str | Path) -> str:
     return key
 
 
+# Extra book formats ai_llm writes next to book.pdf, by download name.
+BOOK_FILE_FORMATS = {"epub": "book.epub", "md": "book.md"}
+
+
+def book_file_key(book_id: str, file_format: str) -> str:
+    return f"{book_id}/{BOOK_FILE_FORMATS[file_format]}"
+
+
+def upload_book_files(book_id: str, output_dir: str | Path) -> list[str]:
+    """Upload whichever extra formats (book.epub, book.md) exist in the
+    book's output folder; returns the formats uploaded."""
+    client = _client()
+    _ensure_bucket(client)
+    uploaded = []
+    for file_format, name in BOOK_FILE_FORMATS.items():
+        path = Path(output_dir) / name
+        if path.exists():
+            client.upload_file(str(path), settings.s3_bucket, book_file_key(book_id, file_format))
+            uploaded.append(file_format)
+    return uploaded
+
+
+def object_exists(key: str) -> bool:
+    try:
+        _client().head_object(Bucket=settings.s3_bucket, Key=key)
+        return True
+    except ClientError:
+        return False
+
+
 def presigned_url(key: str, expires_in: int = 900) -> str:
     client = _client()
     return client.generate_presigned_url(

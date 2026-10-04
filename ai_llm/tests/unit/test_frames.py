@@ -572,3 +572,79 @@ def test_a_whiteboard_chunk_with_no_scene_changes_still_gets_screenshots(tmp_pat
 
     saved = json.loads(out.read_text(encoding="utf-8"))["frames"]
     assert [round(frame["timestamp_seconds"]) for frame in saved] == [75, 225, 375, 525, 597]
+
+
+def _slide(path, webcam_fill=None):
+    """A 'slide' with a few shapes; optionally a webcam box in the bottom-right."""
+    image = Image.new("RGB", (160, 90), color=(240, 240, 240))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 70, 40), fill=(20, 20, 160))
+    draw.ellipse((80, 5, 130, 45), fill=(160, 20, 20))
+    if webcam_fill is not None:
+        draw.rectangle((120, 60, 160, 90), fill=webcam_fill)
+    image.save(path)
+    return path
+
+
+def test_masked_phash_ignores_the_webcam_corner(tmp_path):
+    first = _slide(tmp_path / "a.png", webcam_fill=(0, 0, 0))
+    second = _slide(tmp_path / "b.png", webcam_fill=(255, 255, 0))
+    with Image.open(first) as a, Image.open(second) as b:
+        assert frames_node.masked_phash(a) - frames_node.masked_phash(b) == 0
+
+
+def test_dedupe_book_screenshots_keeps_the_later_of_near_duplicates_across_chapters(tmp_path):
+    video_dir = tmp_path / "vid1"
+    video_dir.mkdir()
+    early = _slide(video_dir / "000_00.png")
+    late = _slide(video_dir / "001_00.png", webcam_fill=(0, 200, 0))
+    other = video_dir / "001_01.png"
+    _make_image(other, (0, 0, 0), shape=(5, 5, 40, 60))
+    chapters = [
+        {"screenshots": [{"asset_path": str(early), "timestamp_seconds": 100.0}]},
+        {
+            "screenshots": [
+                {"asset_path": str(late), "timestamp_seconds": 2000.0},
+                {"asset_path": str(other), "timestamp_seconds": 2100.0},
+            ]
+        },
+    ]
+
+    frames_node.dedupe_book_screenshots(chapters)
+
+    assert chapters[0]["screenshots"] == []
+    assert [shot["asset_path"] for shot in chapters[1]["screenshots"]] == [str(late), str(other)]
+
+
+def test_dedupe_book_screenshots_never_merges_different_videos(tmp_path):
+    shots = []
+    for video_id in ("vidA", "vidB"):
+        (tmp_path / video_id).mkdir()
+        path = _slide(tmp_path / video_id / "000_00.png")
+        shots.append({"asset_path": str(path), "timestamp_seconds": 10.0})
+    chapters = [{"screenshots": shots}]
+
+    frames_node.dedupe_book_screenshots(chapters)
+
+    assert len(chapters[0]["screenshots"]) == 2
+
+
+def test_dedupe_book_screenshots_drops_a_precap_shown_again_much_later(tmp_path):
+    video_dir = tmp_path / "vid1"
+    video_dir.mkdir()
+    precap = _slide(video_dir / "000_00.png")
+    other = video_dir / "000_01.png"
+    _make_image(other, (0, 0, 0), shape=(5, 5, 40, 60))
+    final = _slide(video_dir / "001_00.png", webcam_fill=(0, 0, 200))
+    chapters = [
+        {"screenshots": [
+            {"asset_path": str(precap), "timestamp_seconds": 5.0},
+            {"asset_path": str(other), "timestamp_seconds": 600.0},
+        ]},
+        {"screenshots": [{"asset_path": str(final), "timestamp_seconds": 1900.0}]},
+    ]
+
+    frames_node.dedupe_book_screenshots(chapters)
+
+    assert [shot["asset_path"] for shot in chapters[0]["screenshots"]] == [str(other)]
+    assert len(chapters[1]["screenshots"]) == 1

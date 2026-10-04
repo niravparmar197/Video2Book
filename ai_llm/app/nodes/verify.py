@@ -400,6 +400,106 @@ def _spoken_share(quote: str, transcript_words: list[str], positions: dict[str, 
     return sum(len(words) * _part_share(words, transcript_words, positions) for words in parts) / total
 
 
+# Auto-captions split a word they don't know into two real ones ("item
+# potency" for idempotency) and the writer copies them, even when it spells
+# the word right elsewhere in the same notes -- a reviewer's first complaint
+# about a real system-design book ("Item Potency Key", in the index too).
+_WORD_PAIR_RE = re.compile(r"(?=\b([A-Za-z]{2,})[ \-‐‑]([A-Za-z]{2,})\b)")
+# Plain words only: a camelCase identifier (`sessionId`) turned "session ID"
+# into "sessionid".
+_LONG_WORD_RE = re.compile(r"(?<![\w`])[A-Za-z][a-z]{7,}(?![\w`])")
+_PAIR_STOPWORDS = frozenset(
+    "the an of to in on for and or is are be has have had with by at as it its this that every any some "
+    "no not all each one our your their his her my we you they he she can will was were".split()
+)
+_SPLIT_WORD_SIMILARITY = 0.85
+
+# Tech terms auto-captions get wrong every time, fixed even when the right
+# spelling appears nowhere else in the book.
+_CAPTION_FIXES = {
+    "item potency": "idempotency",
+    "item potent": "idempotent",
+    "uu id": "UUID",
+    "uu ids": "UUIDs",
+    "post gress": "Postgres",
+    "postgress": "Postgres",
+    "my sequel": "MySQL",
+    "kubernates": "Kubernetes",
+    "cuber netes": "Kubernetes",
+    "e tag": "ETag",
+    "e tags": "ETags",
+}
+# Also inside identifiers: a schema field came out as `item_potency_key`.
+_CAPTION_FIX_RE = re.compile(
+    r"(?<![A-Za-z0-9-])("
+    + "|".join(
+        re.escape(key).replace(r"\ ", r"[ _\-‐‑]")
+        for key in sorted(_CAPTION_FIXES, key=len, reverse=True)
+    )
+    + r")(?![A-Za-z0-9-])",
+    re.IGNORECASE,
+)
+
+
+_A_BEFORE_VOWEL_RE = re.compile(r"\b([Aa])(\s+(?:\*\*|`)?(?:idempoten|ETag)\w*)")
+
+
+def _caption_fix(match: re.Match) -> str:
+    original = match.group(1)
+    fixed = _CAPTION_FIXES[re.sub(r"[_\-‐‑]", " ", original.lower())]
+    if "_" in original:
+        return fixed.lower()  # an identifier stays lowercase: idempotency_key
+    # Keep a capital at the start of a lowercase replacement ("Item Potency Key").
+    return fixed[0].upper() + fixed[1:] if original[0].isupper() and fixed[0].islower() else fixed
+
+
+def fix_split_words(notes: str, vocabulary_text: str) -> str:
+    """Replace a two-word caption split ("Item Potency") with the single word
+    it stands for ("Idempotency") when that word is used in `vocabulary_text`
+    (the notes themselves, the transcript, the creator's typed titles).
+
+    A pair is replaced only when its joined spelling is >= 85% similar to a
+    vocabulary word of 8+ letters with the same first letter -- so "data
+    base" becomes "database" when the notes say database, but ordinary
+    phrases are left alone. Terms captions always get wrong ("UU ID",
+    "my sequel") are fixed from _CAPTION_FIXES first. No LLM call.
+    """
+    notes = _CAPTION_FIX_RE.sub(_caption_fix, notes)
+    vocabulary: dict[tuple[str, int], set[str]] = {}
+    for word in {word.lower() for word in _LONG_WORD_RE.findall(vocabulary_text)}:
+        vocabulary.setdefault((word[0], len(word)), set()).add(word)
+
+    # Overlapping matches (a lookahead), so "The Item Potency" still sees
+    # "Item Potency" after skipping "The Item".
+    replacements: dict[str, str] = {}
+    for match in _WORD_PAIR_RE.finditer(notes):
+        first, second = match.group(1), match.group(2)
+        if first.lower() in _PAIR_STOPWORDS or second.lower() in _PAIR_STOPWORDS:
+            continue
+        joined = (first + second).lower()
+        if len(joined) < 8:
+            continue
+        # Both words must be part of the split: "network has" is not "networks".
+        candidates = [
+            word
+            for length in range(len(joined) - 2, len(joined) + 3)
+            for word in vocabulary.get((joined[0], length), ())
+            if all(
+                difflib.SequenceMatcher(None, part.lower(), word).ratio() < _SPLIT_WORD_SIMILARITY
+                for part in (first, second)
+            )
+        ]
+        close = difflib.get_close_matches(joined, candidates, n=1, cutoff=_SPLIT_WORD_SIMILARITY)
+        if close:
+            word = close[0][0].upper() + close[0][1:] if first[0].isupper() else close[0]
+            replacements[notes[match.start(1) : match.end(2)]] = word
+
+    for pair, word in replacements.items():
+        notes = re.sub(rf"\b{re.escape(pair)}\b", lambda _, word=word: word, notes)
+    # "a item potency key" became "a idempotency key".
+    return _A_BEFORE_VOWEL_RE.sub(lambda match: match.group(1) + "n" + match.group(2), notes)
+
+
 def drop_unspoken_quotes(notes: str, transcript: str) -> str:
     """Remove `> Quote:` lines -- and quoted lines in a list, like a comedy
     recap's Best Moments -- whose words the speaker never said.
@@ -439,7 +539,11 @@ def drop_unspoken_quotes(notes: str, transcript: str) -> str:
                 continue
             for text in quoted:
                 if share(text) < _QUOTE_MATCH_SHARE:
-                    line = re.sub(r"[\"“”]" + re.escape(text) + r"[\"“”]", text, line)
+                    # A function, not a template: a quote with a backslash in
+                    # it raised "bad escape" and crashed the eval.
+                    line = re.sub(
+                        r"[\"“”]" + re.escape(text) + r"[\"“”]", lambda _, text=text: text, line
+                    )
                     unquoted += 1
         kept.append(line)
     if dropped or unquoted:
@@ -447,3 +551,73 @@ def drop_unspoken_quotes(notes: str, transcript: str) -> str:
             "quotes: dropped %s not found in the transcript, unquoted %s paraphrased", dropped, unquoted
         )
     return "\n".join(kept)
+
+
+# --- numbers in the prose -------------------------------------------------
+
+# A number standing alone: not part of a name ("S3", "Q1", "4GB" stay out).
+_PROSE_NUMBER_RE = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?![\w,]|\.\d)")
+# Small whole numbers are counts and list numbering ("3 steps", "1."), not
+# claims worth flagging.
+_SMALL_NUMBER = 10
+
+
+def find_unspoken_numbers(notes: str, transcript: str) -> list[str]:
+    """Numbers in the notes' prose that never occur in the transcript.
+
+    Charts and tables were already checked (strip_ungrounded_visuals); prose
+    was not, and the eval set's weakest lecture notes had exactly this --
+    "284 input neurons" for the speaker's 784, a recomputed worked-example
+    result. Callers send the section back for a revise naming these numbers;
+    nothing is deleted. Skipped for non-English transcripts.
+    """
+    if not _is_english(transcript):
+        return []
+    spoken = _numbers_in(transcript)
+    found: dict[str, None] = {}
+    for line in _FENCE_RE.sub("", notes).splitlines():
+        # Every number in an example is a claim -- a real book's quota example
+        # ("1 GB used, upload 2 GB, a 6 GB upload is denied") was invented and
+        # its arithmetic was wrong, but all its numbers were "small".
+        in_example = bool(_EXAMPLE_LINE_RE.match(line.strip()))
+        for match in _PROSE_NUMBER_RE.finditer(line):
+            text = match.group(1)
+            value = float(text.replace(",", ""))
+            has_unit = bool(_UNIT_AFTER_RE.match(line, match.end()))
+            if (value > _SMALL_NUMBER or has_unit or in_example) and value not in spoken:
+                found.setdefault(text, None)
+    return list(found)
+
+
+_EXAMPLE_LINE_RE = re.compile(r"^>\s*\**example\**\s*:", re.IGNORECASE)
+# A unit after a number makes even a small one a measurable claim (2 GB, 5 ms).
+_UNIT_AFTER_RE = re.compile(
+    r"\s*(?:gb|mb|kb|tb|bytes?|ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?"
+    r"|weeks?|months?|years?|%|percent|x\b|times|users?|requests?|servers?|nodes?|replicas?)\b",
+    re.IGNORECASE,
+)
+
+
+_ACRONYM_RE = re.compile(r"(?<![A-Za-z])([A-Z]{2,6}[0-9]{0,3})(?![A-Za-z])")
+
+
+def find_unspoken_acronyms(notes: str, transcript: str) -> list[str]:
+    """Acronyms in the notes (SHA, MD5, CRDT) that neither the speaker nor the
+    creator's own text (title, chapter titles, appended to `transcript` by
+    the caller) ever uses. A real book called an S3 ETag "a SHA checksum";
+    the speaker never said SHA. Spoken acronyms come through captions in
+    lowercase ("api", "cdn"), so the check is case-insensitive."""
+    if not _is_english(transcript):
+        return []
+    tokens = re.findall(r"[a-z0-9]+", transcript.lower())
+    spoken = set(tokens)
+    # Captions split and pluralise acronyms: "uu id" is UUID, "dvds" has DVD.
+    spoken |= {first + second for first, second in zip(tokens, tokens[1:])}
+    spoken |= {"".join(tokens[i : i + 4]) for i in range(len(tokens) - 3) if all(len(t) == 1 for t in tokens[i : i + 4])}
+    spoken |= {token[:-1] for token in tokens if token.endswith("s")}
+    found: dict[str, None] = {}
+    for match in _ACRONYM_RE.finditer(_FENCE_RE.sub("", notes)):
+        acronym = match.group(1)
+        if acronym.lower() not in spoken:
+            found.setdefault(acronym, None)
+    return list(found)

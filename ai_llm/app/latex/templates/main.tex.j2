@@ -72,7 +72,7 @@
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\color{V2BRule}\hrule height\headrulewidth}
 \fancyhead[C]{\small\textsc{
-{% if volume_number %}{{ book_title }} --- Volume {{ volume_number }}{% else %}{{ book_title }}{% endif %}
+{% if volume_number %}{{ header_title or book_title }} --- Volume {{ volume_number }}{% else %}{{ header_title or book_title }}{% endif %}
 }}
 \fancyfoot[C]{\thepage}
 \fancypagestyle{plain}{

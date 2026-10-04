@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess  # nosec B404 - invokes only the fixed "latexmk" arg list below, never shell=True
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -46,7 +47,11 @@ _UNSUPPORTED_UNICODE_SPACES_RE = re.compile("[\u00a0\u2000-\u200a\u202f\u205f\u3
 
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)")
-_MD_HIGHLIGHT_RE = re.compile(r"==(.+?)==")
+# Also "===Atomic===" and "== Atomic ==": both printed stray "=" signs.
+_MD_HIGHLIGHT_RE = re.compile(r"={2,}\s*([^=\n]+?)\s*={2,}")
+# Emphasis markers have no place in a heading (it also feeds the TOC and
+# PDF bookmarks): "## ==Functional== and ==Non-Functional==" printed them.
+_HEADING_MARKUP_RE = re.compile(r"={2,}|\*{1,3}|(?<!\w)_{1,2}|_{1,2}(?!\w)|`")
 _MD_CODE_RE = re.compile(r"`([^`\n]+)`")
 # A Markdown divider ("---", "***", "___") printed as a stray em dash.
 _HRULE_RE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
@@ -57,6 +62,11 @@ _CALLOUT_RE = re.compile(
     r"^>\s*(?:\*\*)?(key point|remember|tip|note|example|watch out|warning|quote)(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.+)$",
     re.IGNORECASE,
 )
+_LABEL_ONLY_RE = re.compile(
+    r"^>\s*\**(key point|remember|tip|note|example|watch out|warning|quote)\**\s*:?\s*\**\s*$",
+    re.IGNORECASE,
+)
+
 # A "> ..." line with no label (the writer often drops "Example:" from its
 # "> Think of it like ..." analogy) is still a callout, never a literal ">".
 _QUOTE_RE = re.compile(r"^>\s*(.+)$")
@@ -77,7 +87,37 @@ _CALLOUT_STYLES = {
 def escape_latex(text: str) -> str:
     """Escape LaTeX special characters so model/transcript text never breaks a compile."""
     text = _UNSUPPORTED_UNICODE_SPACES_RE.sub(" ", text)
-    return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_SPECIAL_CHARS[m.group()], text)
+    text = _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_SPECIAL_CHARS[m.group()], text)
+    # The text font has no arrow glyphs ("session ID ↔ upload ID" printed a
+    # broken box); math-mode arrows always render.
+    return _ARROWS_RE.sub(lambda m: _MATH_ARROWS[m.group()], text)
+
+
+_MATH_ARROWS = {
+    "→": r"$\rightarrow$",
+    "←": r"$\leftarrow$",
+    "↔": r"$\leftrightarrow$",
+    "⇒": r"$\Rightarrow$",
+    "⇐": r"$\Leftarrow$",
+    "⇔": r"$\Leftrightarrow$",
+    "↑": r"$\uparrow$",
+    "↓": r"$\downarrow$",
+}
+_ARROWS_RE = re.compile("|".join(_MATH_ARROWS))
+
+
+def clean_book_title(title: str) -> str:
+    """A YouTube title without its hashtags ("... | HLD #systemdesign #job"
+    put the hashtags on every page header)."""
+    title = re.sub(r"(?:^|\s)#\w+", "", title)
+    return re.sub(r"[\s|,\-–—]+$", "", title).strip() or "Video Notes"
+
+
+def header_title(title: str, limit: int = 60) -> str:
+    """The running page header: the title's first part ("Design Google Drive
+    in 45 Minutes"), short enough for one line."""
+    first = re.split(r"\s+[|–—-]\s+", title)[0].strip()
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
 _TITLE_SEPARATORS = " -–—:,;|/"
@@ -114,6 +154,16 @@ def _convert_markdown_emphasis(text: str) -> str:
 def _render_callout(label: str, body: str) -> str:
     title, border, fill = _CALLOUT_STYLES[label.lower()]
     body = body.strip()
+    if body.count("**") % 2:
+        # "> **Key point: text**" leaves one "**" after the label is cut off;
+        # unmatched, it printed as literal asterisks.
+        body = body.replace("**", "", 1) if body.startswith("**") else body[::-1].replace("**", "", 1)[::-1]
+    first_letter = re.match(r"[*_]*([a-z])(?![A-Z])", body)
+    if label.lower() != "quote" and first_letter:
+        # "> Key point: **idempotency keys** ..." -- a box starts a sentence
+        # (but leave names like "iPhone" alone).
+        at = first_letter.start(1)
+        body = body[:at] + body[at].upper() + body[at + 1 :]
     if label.lower() == "quote" and len(body) > 1 and body[0] == body[-1] == '"':
         # A straight " typesets as a closing mark at the start; use real ones.
         body = "“" + body[1:-1] + "”"
@@ -124,6 +174,34 @@ def _render_callout(label: str, body: str) -> str:
 # The monospace font has no arrow glyphs (they silently vanished from a real
 # book's hierarchy sketch), so spell them out.
 _CODE_ARROWS = {"→": "->", "←": "<-", "↔": "<->", "⇒": "=>", "⇐": "<=", "↑": "^", "↓": "v"}
+
+
+_BOX_CELL_SEPARATOR = "│"
+_BOX_CHAR_RE = re.compile("[─-╿]")
+
+
+def _ascii_box_char(match: re.Match) -> str:
+    """Box-drawing character -> ASCII: lines to - and |, corners/joins to +."""
+    name = unicodedata.name(match.group(0), "")
+    if "HORIZONTAL" in name and "VERTICAL" not in name and "AND" not in name:
+        return "-"
+    if "VERTICAL" in name and "HORIZONTAL" not in name and "AND" not in name:
+        return "|"
+    return "+"
+
+
+def _box_drawn_table(code_lines: list[str]) -> dict | None:
+    """A table the writer drew with box characters (┌─┬─┐ │ a │ b │) as
+    {"headers", "rows"}, or None. The monospace font has no box glyphs: a
+    real book printed it as rows of "�"."""
+    rows = [
+        [cell.strip() for cell in line.strip().strip(_BOX_CELL_SEPARATOR).split(_BOX_CELL_SEPARATOR)]
+        for line in code_lines
+        if _BOX_CELL_SEPARATOR in line
+    ]
+    if len(rows) < 2 or len(rows[0]) < 2 or any(len(row) != len(rows[0]) for row in rows):
+        return None
+    return {"headers": rows[0], "rows": rows[1:]}
 
 
 def _render_code_block(code_lines: list[str]) -> str:
@@ -141,6 +219,7 @@ def _render_code_block(code_lines: list[str]) -> str:
     for line in code_lines:
         for arrow, ascii_arrow in _CODE_ARROWS.items():
             line = line.replace(arrow, ascii_arrow)
+        line = _BOX_CHAR_RE.sub(_ascii_box_char, line)
         indent = len(line) - len(line.lstrip(" "))
         text = escape_latex(line.strip())
         rendered.append((f"\\hspace*{{{indent * 0.5}em}}" if indent else "") + text)
@@ -168,6 +247,12 @@ class Figure:
     # diagrams and charts, which have no video moment).
     video_id: str = ""
     timestamp_seconds: float = -1.0
+    # A big diagram (a whole system's architecture) gets the full page width
+    # and most of its height; at the normal size its labels were unreadable.
+    large: bool = False
+
+
+_LARGE_DIAGRAM_NODES = 8
 
 
 def _watch_url(video_id: str, seconds: float) -> str:
@@ -235,13 +320,25 @@ def markdown_notes_to_sections(markdown_text: str) -> list[Section]:
         if current_heading is not None:
             sections.append(
                 Section(
-                    heading=escape_latex(current_heading),
+                    heading=escape_latex(" ".join(_HEADING_MARKUP_RE.sub("", current_heading).split())),
                     paragraphs=list(current_paragraphs),
                     visuals=list(current_visuals),
                 )
             )
         current_paragraphs.clear()
         current_visuals.clear()
+
+    def add_visual(visual: Visual) -> None:
+        # The same table twice in a row (box-drawn, then as a ```table): keep
+        # the later one in the earlier one's place.
+        if visual.kind == "table":
+            headers = [str(cell).strip().lower() for cell in visual.data.get("headers", [])]
+            for position, existing in enumerate(current_visuals):
+                existing_headers = [str(cell).strip().lower() for cell in existing.data.get("headers", [])]
+                if existing.kind == "table" and existing_headers == headers:
+                    current_visuals[position] = visual
+                    return
+        current_visuals.append(visual)
 
     lines = markdown_text.splitlines()
     index = 0
@@ -259,8 +356,7 @@ def markdown_notes_to_sections(markdown_text: str) -> list[Section]:
                 json_lines.append(lines[index])
                 index += 1
             try:
-                data = json.loads("\n".join(json_lines))
-                current_visuals.append(Visual(kind=kind, data=data))
+                add_visual(Visual(kind=kind, data=json.loads("\n".join(json_lines))))
             except json.JSONDecodeError:
                 logger.warning("ignoring malformed ```%s block in notes", kind)
             index += 1  # skip the closing fence (or end of text if unterminated)
@@ -279,6 +375,10 @@ def markdown_notes_to_sections(markdown_text: str) -> list[Section]:
                     code_lines.append(lines[index])
                     index += 1
             index += 1  # skip the closing fence
+            box_table = _box_drawn_table(code_lines)
+            if box_table:
+                add_visual(Visual(kind="table", data=box_table))
+                continue
             code_block = _render_code_block(code_lines)
             if code_block:
                 current_paragraphs.append(code_block)
@@ -289,6 +389,29 @@ def markdown_notes_to_sections(markdown_text: str) -> list[Section]:
             flush_list()
             index += 1
             continue
+
+        label_only = _LABEL_ONLY_RE.match(stripped)
+        if label_only:
+            # A callout written as a bare label line ("> **Example:**") with
+            # its text on the following "> " lines is ONE box. Read line by
+            # line it became an empty "Example:" box plus one box per line.
+            parts = []
+            index += 1
+            while (
+                index < len(lines)
+                and lines[index].strip().startswith(">")
+                and not _CALLOUT_RE.match(lines[index].strip())
+                and not _LABEL_ONLY_RE.match(lines[index].strip())
+            ):
+                part = lines[index].strip()[1:].strip()
+                if part:
+                    parts.append(part)
+                index += 1
+            index -= 1  # the loop's own `index += 1` moves past the block
+            stripped = f"> {label_only.group(1)}: " + " ".join(parts) if parts else ""
+            if not stripped:
+                index += 1
+                continue
 
         bullet_match = _BULLET_RE.match(stripped)
         callout_match = _CALLOUT_RE.match(stripped)
@@ -443,7 +566,8 @@ def _render_section_visuals(
                     "\\", "/"
                 )
                 caption = escape_latex(str(visual.data.get("title") or visual.kind.capitalize()))
-                visual_figures.append(Figure(relative_path=relative_path, caption=caption))
+                large = visual.kind == "diagram" and len(visual.data.get("nodes", [])) > _LARGE_DIAGRAM_NODES
+                visual_figures.append(Figure(relative_path=relative_path, caption=caption, large=large))
         except Exception as error:  # noqa: BLE001 - one bad visual must not crash the chapter
             logger.warning(
                 "skipping %s visual in chapter %s section %r: %s",
@@ -480,15 +604,38 @@ def _insert_index_markup(rendered_sections: list[dict], index_terms: list[str] |
                 break
             for key in list(remaining.keys()):
                 escaped_term = escape_latex(remaining[key])
-                match_pos = paragraph.lower().find(escaped_term.lower())
-                if match_pos == -1:
+                insert_at = _index_position(paragraph, escaped_term)
+                if insert_at is None:
                     continue
-                insert_at = match_pos + len(escaped_term)
                 paragraph = (
                     paragraph[:insert_at] + f"\\index{{{escaped_term}}}" + paragraph[insert_at:]
                 )
                 del remaining[key]
             paragraphs[paragraph_index] = paragraph
+
+
+# LaTeX that is not reader-visible text: command names, the label/colour
+# arguments of a callout, and existing \index / \href / \label arguments.
+# A plain substring search put \index{not} inside "\notecallout", which
+# printed the whole callout as raw text.
+_NON_TEXT_RE = re.compile(
+    r"\\notecallout\{[^{}]*\}\{[^{}]*\}\{[^{}]*\}"
+    r"|\\(?:index|href|label|ref|url|includegraphics)(?:\[[^\]]*\])?\{[^{}]*\}"
+    r"|\\[A-Za-z]+"
+)
+
+
+def _index_position(paragraph: str, escaped_term: str) -> int | None:
+    """Where to put \\index{} for the first whole-word occurrence of the term
+    in reader-visible text (after a plural "s"/"es" too), or None."""
+    protected = [match.span() for match in _NON_TEXT_RE.finditer(paragraph)]
+    pattern = re.compile(
+        rf"(?<![A-Za-z]){re.escape(escaped_term)}(?:e?s)?(?![A-Za-z])", re.IGNORECASE
+    )
+    for match in pattern.finditer(paragraph):
+        if not any(start < match.end() and match.start() < end for start, end in protected):
+            return match.end()
+    return None
 
 
 _TEST_YOURSELF_RE = re.compile(
@@ -685,7 +832,8 @@ def render_book(
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)))  # nosec B701
     template = env.get_template("main.tex.j2")
     tex_source = template.render(
-        book_title=escape_latex(renderable_title(book_title, "Video Notes")),
+        book_title=escape_latex(renderable_title(clean_book_title(book_title), "Video Notes")),
+        header_title=escape_latex(header_title(renderable_title(clean_book_title(book_title), "Video Notes"))),
         book_kind=escape_latex(book_kind),
         chapter_ids=chapter_ids,
         answer_sets=_load_answers(chapter_ids, chapters_dir),
@@ -752,7 +900,8 @@ def render_book_volumes(
     for volume_index, group in enumerate(chapter_groups, start=1):
         is_last = volume_index == volume_count
         tex_source = template.render(
-            book_title=escape_latex(renderable_title(book_title, "Video Notes")),
+            book_title=escape_latex(renderable_title(clean_book_title(book_title), "Video Notes")),
+            header_title=escape_latex(header_title(renderable_title(clean_book_title(book_title), "Video Notes"))),
             book_kind=escape_latex(book_kind),
             chapter_ids=group,
             answer_sets=_load_answers(group, chapters_dir),
@@ -799,6 +948,10 @@ def compile_chapter(
         ],
         capture_output=True,
         text=True,
+        # LuaLaTeX logs UTF-8; Windows' default code page crashed the reader
+        # thread and lost the log.
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
@@ -809,3 +962,36 @@ def compile_chapter(
             f"{_latex_error_summary(result.stdout)}\n{result.stdout}\n{result.stderr}"
         )
     return pdf_path
+
+
+# Names that only exist inside the templates: seen in the PDF's text, a
+# macro broke and printed as raw text (a real book showed
+# "ecalloutKey PointV2BRuleV2BCalloutGold..." where a callout box should be).
+_LEAKED_LATEX_RE = re.compile(r"notecallout|V2B(?:Rule|Warn|Accent|Callout)\w*|\\(?:index|textbf|textit)\b")
+
+
+def find_leaked_latex(
+    pdf_path: str | Path,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> list[str]:
+    """Template macro names printed as text in the compiled PDF (via
+    pdftotext), each with a little context. [] when clean or when pdftotext
+    is unavailable -- a check, never a reason to fail the book."""
+    try:
+        result = runner(
+            ["pdftotext", "-enc", "UTF-8", str(pdf_path), "-"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    text = result.stdout or ""
+    return [
+        " ".join(text[max(0, match.start() - 30) : match.end() + 30].split())
+        for match in _LEAKED_LATEX_RE.finditer(text)
+    ]

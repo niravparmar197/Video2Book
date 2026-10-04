@@ -125,6 +125,20 @@ def timed_cues_for_sources(sources: list[dict], output_dir: str | Path) -> list[
 
 
 def chapter_section_times(
-    notes: str, sources: list[dict], output_dir: str | Path
+    notes: str,
+    sources: list[dict],
+    output_dir: str | Path,
+    time_ranges: list[tuple[float, float]] | None = None,
 ) -> list[SectionTime]:
-    return section_times(notes, timed_cues_for_sources(sources, output_dir))
+    """`time_ranges`, when known (the YouTube chapters this book chapter
+    matches), limit the search to those stretches of the video: matched over
+    a whole 30-minute chunk, two chapters' sections both landed on 27:48."""
+    cues = timed_cues_for_sources(sources, output_dir)
+    if time_ranges:
+        inside = [
+            (video_id, cue)
+            for video_id, cue in cues
+            if any(start - _WINDOW_SECONDS <= cue.start_seconds < end for start, end in time_ranges)
+        ]
+        cues = inside or cues
+    return section_times(notes, cues)
