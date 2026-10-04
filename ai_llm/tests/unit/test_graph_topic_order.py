@@ -387,3 +387,60 @@ def test_plan_node_does_not_rerun_when_plan_already_exists(tmp_path, monkeypatch
     monkeypatch.setattr(graph_module, "run_plan_topics", must_not_run)
 
     graph_module._plan_node({"output_dir": str(tmp_path)})
+
+
+def test_write_node_tells_each_chapter_which_chapters_share_its_chunks(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run_write_topic(topic, output_dir):
+        seen[topic["title"]] = topic.get("other_chapters")
+        path = graph_module.notes_output_path(f"topic_{topic['slug']}", output_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("## x\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(graph_module, "run_write_topic", fake_run_write_topic)
+    chapters = [
+        {"id": "a", "slug": "a", "title": "A", "skip": False, "sources": [{"video_id": "v", "chunk_index": 0}]},
+        {"id": "b", "slug": "b", "title": "B", "skip": False, "sources": [{"video_id": "v", "chunk_index": 0}]},
+        {"id": "c", "slug": "c", "title": "C", "skip": False, "sources": [{"video_id": "v", "chunk_index": 1}]},
+    ]
+
+    graph_module._write_topic_node({"output_dir": str(tmp_path), "chapters": chapters})
+
+    assert seen == {"A": ["B"], "B": ["A"], "C": []}
+
+
+def test_screenshots_follow_youtube_chapters_to_the_matching_book_chapter(tmp_path):
+    # Real case: a system-design video's finished architecture drawing (44:15)
+    # landed in the wrong chapter when screenshots went to the first chapter
+    # of their 30-minute chunk.
+    for slug in ("upload", "schema"):
+        (tmp_path / f"{slug}.md").write_text("## Notes\nText.\n", encoding="utf-8")
+
+    def shot(minutes):
+        return {"asset_path": str(tmp_path / "assets" / "gd1" / f"{minutes}.jpg"), "timestamp_seconds": minutes * 60}
+
+    chapters = [
+        {"title": "Upload Flow High Level Design", "notes_path": str(tmp_path / "upload.md"), "sources": [],
+         "screenshots": [shot(14), shot(44)]},
+        {"title": "Database Schema", "notes_path": str(tmp_path / "schema.md"), "sources": [], "screenshots": []},
+    ]
+    videos = [{"video_id": "gd1", "chapters": [
+        {"title": "Upload File Flow HLD", "start_seconds": 540, "end_seconds": 1719},
+        {"title": "Database Schema", "start_seconds": 2428, "end_seconds": 2657},
+    ]}]
+
+    graph_module._place_screenshots_by_chapter_time(chapters, str(tmp_path), videos)
+
+    assert [s["timestamp_seconds"] for s in chapters[0]["screenshots"]] == [14 * 60]
+    assert [s["timestamp_seconds"] for s in chapters[1]["screenshots"]] == [44 * 60]
+
+
+def test_youtube_chapter_titles_map_to_the_most_alike_book_chapter():
+    owners = graph_module._youtube_chapter_owners(
+        [{"title": "File Storage Strategy"}, {"title": "Upload Flow High Level Design"}],
+        [{"title": "Where to store actual file?"}, {"title": "Upload File Flow HLD"}, {"title": "Precap"}],
+    )
+
+    assert owners == [0, 1, None]

@@ -576,3 +576,16 @@ def test_a_refine_revises_the_previous_attempt_with_the_feedback_instead_of_star
     assert "First attempt with a wrong 99%" in revise
     assert "'99%' is not in the transcript" in revise and "4/10" in revise
     assert "the transcript" in revise and "PODCAST NOTES" in revise
+
+
+def test_topic_prompt_names_the_sibling_chapters_to_leave_out():
+    prompt = write_module._load_topic_prompt(
+        "File Storage Strategy",
+        [{"video_id": "v", "chunk_index": 0, "text": "excerpt"}],
+        [],
+        "lecture",
+        ["Upload Flow High Level Design", "Download Flow High Level Design"],
+    )
+
+    assert "Other chapters of this book cover: Upload Flow High Level Design; Download Flow High Level Design" in prompt
+    assert "write only about File Storage Strategy" in prompt

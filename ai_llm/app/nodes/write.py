@@ -237,7 +237,11 @@ def run_write(video_id: str, output_dir: str | Path) -> Path:
 
 
 def _load_topic_prompt(
-    title: str, sources: list[dict], covers: list[str], genre: str = DEFAULT_GENRE
+    title: str,
+    sources: list[dict],
+    covers: list[str],
+    genre: str = DEFAULT_GENRE,
+    other_chapters: list[str] | None = None,
 ) -> str:
     template = _TOPIC_PROMPT_PATH.read_text(encoding="utf-8")
     excerpts = "\n\n".join(
@@ -252,6 +256,15 @@ def _load_topic_prompt(
         if covers
         else ""
     )
+    # Several topic chapters share one 30-minute chunk, so the excerpts also
+    # talk about the others. Unchecked, a real system-design book repeated the
+    # upload and download flows in its "File Storage Strategy" chapter.
+    if other_chapters:
+        covers_text += (
+            "\nOther chapters of this book cover: "
+            + "; ".join(other_chapters)
+            + f". The excerpts also talk about those -- leave them out and write only about {title}."
+        )
     return template.format(
         topic=title,
         covers=covers_text,
@@ -283,7 +296,11 @@ def run_write_topic(topic: dict, output_dir: str | Path) -> Path:
         )
 
     prompt = _load_topic_prompt(
-        topic["title"], sources, topic.get("covers", []), load_genre(output_dir)
+        topic["title"],
+        sources,
+        topic.get("covers", []),
+        load_genre(output_dir),
+        topic.get("other_chapters"),
     )
     transcript = "\n\n".join(source["text"] for source in sources)
     notes, score, attempts = _write_and_refine(prompt, transcript, load_genre(output_dir))

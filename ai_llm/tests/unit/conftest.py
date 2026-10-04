@@ -103,6 +103,19 @@ def _default_inert_book_pass(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_stream_url_lookups(monkeypatch):
+    """run_frames also grabs a chunk's final frame from the video; resolving
+    a stream URL is a real YouTube request, which no unit test may make.
+    Tests of that path stub it themselves."""
+    from app.nodes import frames as frames_module
+
+    def no_network(url):
+        raise RuntimeError("no YouTube requests in unit tests")
+
+    monkeypatch.setattr(frames_module, "_get_stream_url", no_network)
+
+
+@pytest.fixture(autouse=True)
 def _default_lecture_genre(monkeypatch):
     """The topics node also decides the book's genre with one LLM call; tests
     get "lecture" (the study-notes style) unless they override it."""

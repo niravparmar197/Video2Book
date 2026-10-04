@@ -520,3 +520,55 @@ def test_detect_scenes_decodes_keyframes_only(tmp_path):
     args = captured["args"]
     assert args[args.index("-skip_frame") + 1] == "nokey"
     assert args.index("-skip_frame") < args.index("-i")  # an input option, before -i
+
+
+def test_every_chunk_grabs_its_final_moment_and_sparse_chunks_are_sampled():
+    chunk = {"start_seconds": 0.0, "end_seconds": 600.0}
+
+    many_scenes = frames_node._extra_frame_times(chunk, scene_frame_count=10)
+    whiteboard = frames_node._extra_frame_times(chunk, scene_frame_count=0)
+
+    assert many_scenes == [597.0]  # just the finished state
+    assert whiteboard == [75.0, 225.0, 375.0, 525.0, 597.0]
+
+
+def test_grab_frames_writes_one_jpeg_per_timestamp(tmp_path):
+    calls = []
+
+    def fake_runner(args, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"jpg")
+        return _FakeCompletedProcess(0)
+
+    frames = frames_node.grab_frames("video.mp4", [12.5, 597.0], tmp_path, runner=fake_runner)
+
+    assert [frame["timestamp_seconds"] for frame in frames] == [12.5, 597.0]
+    assert calls[0][calls[0].index("-ss") + 1] == "12.5"
+    assert all(Path(frame["path"]).exists() for frame in frames)
+
+
+def test_a_whiteboard_chunk_with_no_scene_changes_still_gets_screenshots(tmp_path, monkeypatch):
+    # Real case: a 44-minute whiteboard system-design video gave 0 screenshots,
+    # so its finished architecture drawing never reached the book.
+    monkeypatch.setenv("VIDEO_MODE", "stream")
+    monkeypatch.setattr(frames_node, "detect_scenes_with_fallback", lambda *a, **k: [])
+    monkeypatch.setattr(frames_node, "_get_stream_url", lambda url: "https://stream")
+    colors = iter([(250, 250, 250), (30, 30, 30), (200, 40, 40), (40, 200, 40), (40, 40, 200)])
+
+    def fake_grab(source, timestamps, out_dir, runner=None):
+        frames = []
+        for t in timestamps:
+            path = Path(out_dir) / f"g{int(t)}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _make_image(path, next(colors), shape=(int(t) % 50, 5, int(t) % 50 + 10, 30))
+            frames.append({"path": path, "timestamp_seconds": t})
+        return frames
+
+    monkeypatch.setattr(frames_node, "grab_frames", fake_grab)
+    monkeypatch.setattr(frames_node, "dedupe_frames", lambda frames, **kw: frames)
+
+    chunk = {"chunk_index": 0, "start_seconds": 0.0, "end_seconds": 600.0}
+    out = frames_node.run_frames("wb1", "https://youtube.com/watch?v=wb1", chunk, tmp_path)
+
+    saved = json.loads(out.read_text(encoding="utf-8"))["frames"]
+    assert [round(frame["timestamp_seconds"]) for frame in saved] == [75, 225, 375, 525, 597]

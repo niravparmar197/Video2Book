@@ -294,6 +294,57 @@ def dedupe_frames(
     return kept
 
 
+# A whiteboard / drawing video changes a little at a time, so scene detection
+# finds almost nothing -- a real 44-minute system-design video gave 0 frames
+# with keyframe-only decoding and 2 with full decoding, and its finished
+# architecture drawing (the video's last frame) never reached the book.
+# Below this many scene frames, a chunk is also sampled at a fixed interval;
+# and every chunk's final moment is always grabbed (the finished drawing).
+_MIN_SCENE_FRAMES = 3
+_FALLBACK_INTERVAL_SECONDS = 150.0
+_FINAL_FRAME_OFFSET_SECONDS = 3.0
+
+
+def _extra_frame_times(chunk: dict, scene_frame_count: int) -> list[float]:
+    start, end = float(chunk["start_seconds"]), float(chunk["end_seconds"])
+    times = [max(start, end - _FINAL_FRAME_OFFSET_SECONDS)]
+    if scene_frame_count < _MIN_SCENE_FRAMES:
+        moment = start + _FALLBACK_INTERVAL_SECONDS / 2
+        while moment < end - _FINAL_FRAME_OFFSET_SECONDS:
+            times.append(moment)
+            moment += _FALLBACK_INTERVAL_SECONDS
+    return sorted(times)
+
+
+def _frame_source(video_id: str, video_url: str, output_dir: str | Path) -> str:
+    """The downloaded copy if this run has one, else a stream URL."""
+    local = local_video_path(video_id, output_dir)
+    return str(local) if local.exists() else _get_stream_url(video_url)
+
+
+def grab_frames(
+    source: str,
+    timestamps: list[float],
+    output_dir: str | Path,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> list[dict]:
+    """One JPEG per timestamp (fast seek), as {"path", "timestamp_seconds"}."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for timestamp in timestamps:
+        path = output_dir / f"grab_{int(timestamp * 1000):010d}.jpg"
+        runner(
+            ["ffmpeg", "-y", "-ss", str(timestamp), "-i", source, "-frames:v", "1", "-qscale:v", "2", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
+        if path.exists():
+            frames.append({"path": path, "timestamp_seconds": timestamp})
+    return frames
+
+
 def limit_frames(frames: list[dict], max_frames: int) -> list[dict]:
     """Keep at most `max_frames` screenshots, evenly spread across the chunk
     (first and last included), so the book still covers the whole video.
@@ -398,7 +449,17 @@ def run_frames(
         detected = detect_scenes_with_fallback(
             video_url, chunk["start_seconds"], chunk["end_seconds"], scene_dir
         )
-    kept = limit_frames(dedupe_frames(detected), load_settings().max_screenshots_per_chunk)
+    try:
+        extra = grab_frames(
+            _frame_source(video_id, video_url, output_dir),
+            _extra_frame_times(chunk, len(detected)),
+            scene_dir,
+        )
+    except Exception as error:  # noqa: BLE001 - extra frames are a bonus, never fatal
+        logger.warning("could not grab extra frames for %s chunk %s: %s", video_id, chunk["chunk_index"], error)
+        extra = []
+    frames = sorted([*detected, *extra], key=lambda frame: frame["timestamp_seconds"])
+    kept = limit_frames(dedupe_frames(frames), load_settings().max_screenshots_per_chunk)
 
     assets_dir = output_dir / "assets" / video_id
     assets_dir.mkdir(parents=True, exist_ok=True)

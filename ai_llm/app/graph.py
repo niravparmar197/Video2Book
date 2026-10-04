@@ -30,6 +30,7 @@ import contextvars
 import functools
 import json
 import logging
+import re
 import shutil
 import threading
 import time
@@ -457,7 +458,8 @@ def _render_chapters(
             chapter.get("index_terms"),
             # Where each section is spoken: places screenshots by time and
             # links each section to its moment on YouTube (app.nodes.align).
-            chapter_section_times(notes, chapter.get("sources", []), output_dir),
+            chapter.get("section_times")
+            or chapter_section_times(notes, chapter.get("sources", []), output_dir),
         )
         file_keys.append(chapter["file_key"])
 
@@ -590,9 +592,22 @@ def _topic_outline_node(state: BookState) -> dict:
 
 
 def _write_topic_node(state: BookState) -> dict:
+    def chunk_keys(chapter: dict) -> set[tuple[str, int]]:
+        return {(source["video_id"], source["chunk_index"]) for source in chapter.get("sources", [])}
+
     def process(chapter: dict) -> tuple[str, str]:
+        # The other chapters written from the same transcript chunks, so this
+        # chapter's writer leaves their topics to them (no repeated sections).
+        others = [
+            other["title"]
+            for other in state["chapters"]
+            if other is not chapter and not other["skip"] and chunk_keys(other) & chunk_keys(chapter)
+        ]
         output_path = notes_output_path(f"topic_{chapter['slug']}", state["output_dir"])
-        run_cached(output_path, lambda: run_write_topic(chapter, state["output_dir"]))
+        run_cached(
+            output_path,
+            lambda: run_write_topic({**chapter, "other_chapters": others}, state["output_dir"]),
+        )
         return chapter["id"], str(output_path)
 
     results = _map_parallel(state["chapters"], process)
@@ -647,6 +662,84 @@ def _topic_chapter_hours_and_fresh_sources(
     return result
 
 
+_TITLE_STOPWORDS = frozenset(
+    "the and for how what who where will with from into your this that are why when which".split()
+)
+
+
+def _title_stems(title: str) -> set[str]:
+    words = re.findall(r"[a-z]+", title.lower())
+    return {word[:4] for word in words if len(word) >= 3 and word not in _TITLE_STOPWORDS}
+
+
+def _youtube_chapter_owners(chapters: list[dict], youtube_chapters: list[dict]) -> list[int | None]:
+    """For each YouTube chapter, the book chapter whose title is most alike
+    ("Where to store actual file?" -> "File Storage Strategy"), or None."""
+    book_stems = [_title_stems(chapter["title"]) for chapter in chapters]
+    owners: list[int | None] = []
+    for youtube_chapter in youtube_chapters:
+        stems = _title_stems(youtube_chapter["title"])
+        scores = [len(stems & book) / len(stems | book) if stems | book else 0.0 for book in book_stems]
+        best = max(range(len(scores)), key=lambda index: scores[index]) if scores else None
+        owners.append(best if best is not None and scores[best] > 0 else None)
+    return owners
+
+
+def _place_screenshots_by_chapter_time(
+    chapters: list[dict], output_dir: str, videos: list[dict] | None = None
+) -> None:
+    """Move each screenshot to the chapter that is spoken at its moment.
+
+    A 30-minute chunk usually feeds several topic chapters, and its
+    screenshots all went to the first of them: in a real system-design book
+    "Requirements" got ten upload-flow screenshots and "Database Schema" got
+    the finished architecture drawing.
+
+    When the video has YouTube chapters (exact time ranges), a screenshot
+    goes to the book chapter whose title matches the YouTube chapter it was
+    taken in. Otherwise -- or for a YouTube chapter with no matching title --
+    it goes to the chapter holding the latest section (aligned to caption
+    times by app.nodes.align) that starts at or before it. Chapters with no
+    timed section keep what they had. Sets each chapter's "section_times"
+    so rendering doesn't align twice.
+    """
+    youtube_chapters = {video["video_id"]: video.get("chapters") or [] for video in videos or []}
+    owners = {
+        video_id: _youtube_chapter_owners(chapters, chapter_list)
+        for video_id, chapter_list in youtube_chapters.items()
+    }
+
+    def youtube_owner(video_id: str, seconds: float) -> int | None:
+        for chapter, owner in zip(youtube_chapters.get(video_id, []), owners.get(video_id, [])):
+            if chapter["start_seconds"] <= seconds < (chapter["end_seconds"] or float("inf")):
+                return owner
+        return None
+
+    timed: list[tuple[float, str, int]] = []  # (start, video_id, chapter index)
+    for index, chapter in enumerate(chapters):
+        notes = Path(chapter["notes_path"]).read_text(encoding="utf-8")
+        chapter["section_times"] = chapter_section_times(notes, chapter.get("sources", []), output_dir)
+        timed.extend(
+            (start, video_id, index) for entry in chapter["section_times"] if entry for video_id, start in [entry]
+        )
+    if not timed and not any(youtube_chapters.values()):
+        return
+    timed.sort()
+
+    moved: list[list[dict]] = [[] for _ in chapters]
+    for index, chapter in enumerate(chapters):
+        for shot in chapter.get("screenshots") or []:
+            video_id = Path(shot["asset_path"]).parent.name
+            seconds = shot["timestamp_seconds"]
+            target = youtube_owner(video_id, seconds)
+            if target is None:
+                before = [entry for entry in timed if entry[1] == video_id and entry[0] <= seconds]
+                target = before[-1][2] if before else index
+            moved[target].append(shot)
+    for chapter, shots in zip(chapters, moved):
+        chapter["screenshots"] = shots
+
+
 def _render_topic_node(state: BookState) -> dict:
     chunk_minutes = load_settings().chunk_minutes
     book_pass = state.get("book_pass", {})
@@ -667,6 +760,7 @@ def _render_topic_node(state: BookState) -> dict:
         }
         for chapter, (hours, fresh_sources) in zip(active, hours_and_sources)
     ]
+    _place_screenshots_by_chapter_time(chapters, state["output_dir"], state["videos"])
     tex_path, pdf_path = _render_chapters(
         chapters,
         state["output_dir"],

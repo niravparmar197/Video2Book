@@ -29,6 +29,9 @@ VISUAL AIDS (diagrams and tables are what make notes quick to review)
 - ```table: {"headers": ["...", ...], "rows": [["...", ...], ...]}. 2-5 columns, short cells.
 - ```chart: {"type": "bar", "title": "...", "categories": ["...", ...], "values": [number, ...]}. Every value must be a number the speaker literally said. Never add, subtract or estimate a value. When in doubt, use a ```table or a bullet. A chart with any unspoken value is deleted automatically.
 
+COMPLETE ARCHITECTURE (only when the talk builds one)
+If the speaker builds up one overall design across the talk -- a system design or architecture where a request flows through several components (client, gateway, services, storage, queues, workers) -- add a `## Complete Architecture` section just before Key Takeaways: one sentence on what the picture shows, then ONE ```diagram containing every component the speaker named and every connection between them, in the order a request flows. Label each arrow with the speaker's step number and action when they gave one (e.g. "1. upload chunks"). This diagram may have up to 14 nodes. Leave the section out for talks that do not build an overall design.
+
 END
 Finish with a `## Key Takeaways` section: 4-7 bullets, the most important points, most important first, one line each, at most one `==highlight==` per bullet. No visual in this section.
 

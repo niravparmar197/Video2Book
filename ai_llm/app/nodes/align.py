@@ -33,7 +33,7 @@ _STOPWORDS = frozenset(
 # Overview / summary sections cover the whole video, not one moment.
 _SUMMARY_HEADING_RE = re.compile(
     r"^##\s+(?:episode at a glance|the show at a glance|key takeaways|best moments|"
-    r"mentioned in this episode|test yourself)\b",
+    r"mentioned in this episode|test yourself|complete architecture)\b",
     re.IGNORECASE,
 )
 

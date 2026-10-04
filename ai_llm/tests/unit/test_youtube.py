@@ -871,3 +871,51 @@ def test_a_cached_single_video_link_resolves_without_youtube(tmp_path, monkeypat
     entries = list_playlist_videos("https://www.youtube.com/watch?v=abcdefghijk&t=29s", _NoNetworkYDL)
 
     assert [(e.video_id, e.title) for e in entries] == [("abcdefghijk", "Cached")]
+
+
+def test_original_caption_tracks_match_a_regional_language_to_youtubes_track_names():
+    from app.youtube import original_caption_tracks
+
+    assert original_caption_tracks("en-US") == ["en-US-orig", "en-US", "en-orig", "en"]
+    assert original_caption_tracks("hi") == ["hi-orig", "hi"]
+    assert original_caption_tracks(None) == ["en-orig", "en"]
+
+
+class _DubbedVideoYDL(_HindiVideoYDL):
+    """An English talk with AI-dubbed audio: an -orig track for every dub
+    language, Arabic listed first. The English track is rate-limited."""
+
+    def extract_info(self, url, download=False):
+        meta = super().extract_info(url, download=False) if not download else None
+        if not download:
+            return {
+                **meta,
+                "id": "dubbed1",
+                "language": "en-US",
+                "automatic_captions": {"ar-orig": [{}], "bn-orig": [{}], "en-orig": [{}], "en": [{}]},
+            }
+        track = self.opts["subtitleslangs"][0]
+        type(self).requested.append(track)
+        if track == "en":
+            import yt_dlp
+
+            raise yt_dlp.utils.DownloadError("ERROR: HTTP Error 429: Too Many Requests")
+        out = Path(self.opts["outtmpl"].replace("%(id)s", "dubbed1").replace("%(ext)s", f"{track}.vtt"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n", encoding="utf-8")
+        return {"id": "dubbed1", "title": "Design Google Drive", "duration": 2657, "language": "en-US"}
+
+
+def test_a_dubbed_video_uses_its_own_english_track_never_another_dub_language(tmp_path):
+    _DubbedVideoYDL.requested = []
+
+    info = fetch_video(
+        "https://www.youtube.com/watch?v=dubbed1",
+        tmp_path / "captions",
+        ydl_factory=_DubbedVideoYDL,
+        transcript_source="auto",
+        sleep=lambda s: None,
+    )
+
+    assert _DubbedVideoYDL.requested == ["en", "en-orig"]
+    assert info.captions_path.endswith("dubbed1.en-orig.vtt")

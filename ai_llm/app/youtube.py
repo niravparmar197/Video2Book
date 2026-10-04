@@ -235,6 +235,20 @@ def _download_captions(
     return None
 
 
+def original_caption_tracks(language: str | None) -> list[str]:
+    """Caption track names that can hold the video's own language, best first.
+
+    YouTube reports a regional language ("en-US") but names tracks by the
+    base language ("en-orig", "en"), so both forms are tried. With no
+    language reported, only English is tried.
+    """
+    languages = []
+    for code in (language, (language or "").split("-")[0], "en" if not language else None):
+        if code and code not in languages:
+            languages.append(code)
+    return [track for code in languages for track in (f"{code}-orig", code)]
+
+
 def _download_original_language_captions(
     url: str,
     caption_opts: dict[str, Any],
@@ -252,12 +266,12 @@ def _download_original_language_captions(
     except yt_dlp.utils.DownloadError:
         return None
 
-    language = metadata.get("language")
     available = {**(metadata.get("automatic_captions") or {}), **(metadata.get("subtitles") or {})}
-    candidates = [track for track in ([f"{language}-orig", language] if language else []) if track in available]
+    candidates = [track for track in original_caption_tracks(metadata.get("language")) if track in available]
     if not candidates:
-        candidates = [track for track in available if track.endswith("-orig")]
-    if not candidates:
+        # Never fall back to an arbitrary "-orig" track: a video with AI-dubbed
+        # audio has one per dub language, and a real book got an *Arabic*
+        # transcript of an English talk that way. Whisper is the safer fallback.
         return None
 
     track = candidates[0]
