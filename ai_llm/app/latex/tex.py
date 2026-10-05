@@ -471,11 +471,14 @@ def _build_figures(screenshots: list[dict] | None, chapters_dir: Path) -> list[F
         # Saved as assets/<video_id>/<chunk>_<n>.jpg by app.nodes.frames.
         video_id = asset_path.parent.name
         timestamp = float(shot["timestamp_seconds"])
-        # The caption links to that exact moment on YouTube.
+        # The caption links to that exact moment on YouTube, after what the
+        # vision model saw in the frame (app.nodes.frames.review_frames).
         caption = (
             f"\\href{{{_watch_url(video_id, timestamp)}}}"
             f"{{Screenshot at {_clock(timestamp)} -- watch on YouTube}}"
         )
+        if shot.get("caption"):
+            caption = f"{escape_latex(str(shot['caption']))}. {caption}"
         figures.append(
             Figure(
                 relative_path=relative_path,

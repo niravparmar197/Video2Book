@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess  # nosec B404 - only ever called with a fixed arg list, never shell=True
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -26,6 +27,7 @@ import imagehash
 from PIL import Image, ImageFilter, ImageStat
 
 from app.config import load_settings
+from app.llm import LLMProviderError, call_vision
 from app.youtube import download_chunk_video as _download_chunk_video
 from app.youtube import download_video_for_frames as _download_video_for_frames
 from app.youtube import get_stream_url as _get_stream_url
@@ -347,6 +349,70 @@ def dedupe_book_screenshots(
             chapter["screenshots"] = [shot for shot in chapter["screenshots"] if id(shot) not in dropped]
 
 
+# --- vision review ----------------------------------------------------------
+
+_REVIEW_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "screenshot_review.md"
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+# A pop-up ("Subscribed", a channel card) lasts a few seconds: try these
+# moments around the frame for a clean copy of the same picture. Earlier
+# ones too: an end-screen card sits on a video's last frame for 10s+, with
+# nothing after it to grab.
+_OVERLAY_RETRY_OFFSETS = (6.0, -6.0, 12.0, -12.0, -20.0, -30.0)
+_REVIEW_PARALLEL = 4
+_MAX_CAPTION_CHARS = 140
+
+
+def review_frame(path: str | Path) -> dict | None:
+    """The vision model's verdict on one frame -- {"overlay", "person_only",
+    "readable_content", "caption"} -- or None when it can't be had (model
+    down, unparseable reply): the frame is then kept as it is."""
+    try:
+        reply = call_vision(_REVIEW_PROMPT_PATH.read_text(encoding="utf-8"), Path(path).read_bytes())
+        match = _JSON_OBJECT_RE.search(reply)
+        verdict = json.loads(match.group(0)) if match else None
+    except (LLMProviderError, OSError, json.JSONDecodeError) as error:
+        logger.info("screenshot review skipped for %s: %s", Path(path).name, error)
+        return None
+    return verdict if isinstance(verdict, dict) else None
+
+
+def _worth_keeping(verdict: dict) -> bool:
+    return not verdict.get("person_only") and verdict.get("readable_content", True) is not False
+
+
+def review_frames(frames: list[dict], regrab: Callable[[float], dict | None]) -> list[dict]:
+    """Check each kept frame with the vision model.
+
+    Dedupe compares pixels, so it let through what a reader notices at once:
+    a "Subscribed" pop-up over the finished diagram, a frame of only the
+    speaker. A person-only frame, or one with nothing to read, is dropped. A
+    frame with a pop-up over it is replaced by a clean grab a few seconds
+    away when one exists (else kept: its content still matters). Each kept
+    frame gets the model's caption. An unreviewable frame is kept unchanged.
+    """
+    with ThreadPoolExecutor(max_workers=_REVIEW_PARALLEL) as pool:
+        verdicts = list(pool.map(lambda frame: review_frame(frame["path"]), frames))
+
+    kept: list[dict] = []
+    for frame, verdict in zip(frames, verdicts):
+        if verdict is None:
+            kept.append(frame)
+            continue
+        if not _worth_keeping(verdict):
+            logger.info("dropped screenshot at %.0fs: %s", frame["timestamp_seconds"], verdict.get("caption", ""))
+            continue
+        if verdict.get("overlay"):
+            for offset in _OVERLAY_RETRY_OFFSETS:
+                candidate = regrab(frame["timestamp_seconds"] + offset)
+                candidate_verdict = review_frame(candidate["path"]) if candidate else None
+                if candidate_verdict and not candidate_verdict.get("overlay") and _worth_keeping(candidate_verdict):
+                    frame, verdict = candidate, candidate_verdict
+                    break
+        caption = " ".join(str(verdict.get("caption") or "").split()).rstrip(".")
+        kept.append({**frame, "caption": caption[:_MAX_CAPTION_CHARS]} if caption else frame)
+    return kept
+
+
 # A whiteboard / drawing video changes a little at a time, so scene detection
 # finds almost nothing -- a real 44-minute system-design video gave 0 frames
 # with keyframe-only decoding and 2 with full decoding, and its finished
@@ -513,6 +579,20 @@ def run_frames(
         extra = []
     frames = sorted([*detected, *extra], key=lambda frame: frame["timestamp_seconds"])
     kept = limit_frames(dedupe_frames(frames), load_settings().max_screenshots_per_chunk)
+    if load_settings().screenshot_review and kept:
+        start, end = float(chunk["start_seconds"]), float(chunk["end_seconds"])
+
+        def regrab(moment: float) -> dict | None:
+            if not start <= moment <= end:
+                return None
+            try:
+                grabbed = grab_frames(_frame_source(video_id, video_url, output_dir), [moment], scene_dir)
+            except Exception as error:  # noqa: BLE001 - a replacement is a bonus
+                logger.info("could not re-grab a frame at %.0fs: %s", moment, error)
+                return None
+            return grabbed[0] if grabbed and Path(grabbed[0]["path"]).exists() else None
+
+        kept = review_frames(kept, regrab)
 
     assets_dir = output_dir / "assets" / video_id
     assets_dir.mkdir(parents=True, exist_ok=True)
@@ -521,7 +601,10 @@ def run_frames(
     for index, frame in enumerate(kept):
         asset_path = assets_dir / f"{chunk['chunk_index']:03d}_{index:02d}.jpg"
         shutil.copyfile(frame["path"], asset_path)
-        saved.append({"asset_path": str(asset_path), "timestamp_seconds": frame["timestamp_seconds"]})
+        entry = {"asset_path": str(asset_path), "timestamp_seconds": frame["timestamp_seconds"]}
+        if frame.get("caption"):
+            entry["caption"] = frame["caption"]
+        saved.append(entry)
 
     shutil.rmtree(scene_dir, ignore_errors=True)
 

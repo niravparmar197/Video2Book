@@ -67,6 +67,9 @@ class Settings:
     # Screenshots kept per chunk (evenly spread); a talking-head lecture had 153
     # in 27 minutes. 0 = no limit.
     max_screenshots_per_chunk: int = 12
+    # The vision model checks each kept screenshot: drops person-only frames,
+    # re-grabs frames with a pop-up over them, and captions the rest.
+    screenshot_review: bool = True
     transcript_source: str = "auto"
     llm_provider: str = "nvidia"
     llm_fallback_provider: str = "gemini"
@@ -111,6 +114,7 @@ def load_settings(dotenv_path: str | None = _DEFAULT_DOTENV_PATH) -> Settings:
         chunk_minutes=_get_int("CHUNK_MINUTES", 30),
         frames_download_max_minutes=_get_int("FRAMES_DOWNLOAD_MAX_MINUTES", 900),
         max_screenshots_per_chunk=_get_int("MAX_SCREENSHOTS_PER_CHUNK", 12),
+        screenshot_review=_get_bool("SCREENSHOT_REVIEW", True),
         transcript_source=_get_str("TRANSCRIPT_SOURCE", "auto"),
         llm_provider=_get_str("LLM_PROVIDER", "nvidia"),
         llm_fallback_provider=_get_str("LLM_FALLBACK_PROVIDER", "gemini"),

@@ -281,3 +281,33 @@ def test_call_writer_paces_independently_per_provider(monkeypatch):
     # A different provider's first call is never paced against another
     # provider's timestamp.
     assert time_after_gemini - time_after_nvidia == 0.0
+
+
+def test_call_vision_retries_a_busy_endpoint_then_returns_the_reply():
+    from app.llm import call_vision
+
+    calls, sleeps = [], []
+
+    def post(url, payload, headers, timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise OSError("503 Worker local total request limit reached")
+        return {"choices": [{"message": {"content": '{"overlay": false}'}}]}
+
+    settings = Settings()
+    reply = call_vision("Describe it.", b"\xff\xd8jpeg", settings=settings, post=post, sleep=sleeps.append, clock=lambda: 0.0)
+
+    assert reply == '{"overlay": false}'
+    assert len(calls) == 2
+    image = calls[0]["messages"][0]["content"][1]["image_url"]["url"]
+    assert image.startswith("data:image/jpeg;base64,")
+
+
+def test_call_vision_gives_up_after_its_retries():
+    from app.llm import LLMProviderError, call_vision
+
+    def post(url, payload, headers, timeout):
+        raise OSError("down")
+
+    with pytest.raises(LLMProviderError):
+        call_vision("x", b"x", settings=Settings(), post=post, sleep=lambda s: None, clock=lambda: 0.0)

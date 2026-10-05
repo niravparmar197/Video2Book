@@ -648,3 +648,61 @@ def test_dedupe_book_screenshots_drops_a_precap_shown_again_much_later(tmp_path)
 
     assert [shot["asset_path"] for shot in chapters[0]["screenshots"]] == [str(other)]
     assert len(chapters[1]["screenshots"]) == 1
+
+
+def _verdict(**overrides):
+    verdict = {"overlay": False, "person_only": False, "readable_content": True, "caption": "Upload flow diagram."}
+    verdict.update(overrides)
+    return json.dumps(verdict)
+
+
+def test_review_frames_drops_person_only_frames_and_captions_the_rest(tmp_path, monkeypatch):
+    slide = _slide(tmp_path / "slide.png")
+    person = tmp_path / "person.png"
+    _make_image(person, (90, 60, 40))
+    replies = {"slide.png": _verdict(), "person.png": _verdict(person_only=True, readable_content=False)}
+    monkeypatch.setattr(frames_node, "review_frame", lambda path: json.loads(replies[Path(path).name]))
+    frames = [
+        {"path": str(slide), "timestamp_seconds": 10.0},
+        {"path": str(person), "timestamp_seconds": 20.0},
+    ]
+
+    kept = frames_node.review_frames(frames, regrab=lambda moment: None)
+
+    assert kept == [{"path": str(slide), "timestamp_seconds": 10.0, "caption": "Upload flow diagram"}]
+
+
+def test_review_frames_replaces_a_frame_with_a_popup_by_a_clean_grab(tmp_path, monkeypatch):
+    popup, clean = tmp_path / "popup.png", tmp_path / "clean.png"
+    _slide(popup)
+    _slide(clean)
+    verdicts = {"popup.png": {"overlay": True, "readable_content": True, "caption": "Diagram with a pop-up"},
+                "clean.png": {"overlay": False, "readable_content": True, "caption": "Upload flow diagram"}}
+    monkeypatch.setattr(frames_node, "review_frame", lambda path: verdicts[Path(path).name])
+    asked = []
+
+    def regrab(moment):
+        asked.append(moment)
+        return {"path": str(clean), "timestamp_seconds": moment}
+
+    kept = frames_node.review_frames([{"path": str(popup), "timestamp_seconds": 100.0}], regrab)
+
+    assert asked == [106.0]  # the first clean grab wins
+    assert kept == [{"path": str(clean), "timestamp_seconds": 106.0, "caption": "Upload flow diagram"}]
+
+
+def test_review_frames_keeps_frames_it_cannot_review(tmp_path):
+    slide = _slide(tmp_path / "slide.png")
+    frames = [{"path": str(slide), "timestamp_seconds": 5.0}]
+
+    # conftest makes call_vision raise, as when the model is down.
+    assert frames_node.review_frames(frames, regrab=lambda moment: None) == frames
+
+
+def test_review_frame_reads_json_wrapped_in_other_text(tmp_path, monkeypatch):
+    slide = _slide(tmp_path / "slide.png")
+    monkeypatch.setattr(
+        frames_node, "call_vision", lambda prompt, image_bytes, **kw: "Sure:\n" + _verdict(overlay=True) + "\n"
+    )
+
+    assert frames_node.review_frame(slide)["overlay"] is True

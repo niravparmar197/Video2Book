@@ -50,6 +50,7 @@ _SETTING_ENV_VARS = (
     "TRANSCRIPT_SOURCE", "VIDEO_GENRE", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "BOOK_ORDER", "REVIEW_OUTLINE",
     "PASS_SCORE", "MAX_REFINE_ATTEMPTS", "LLM_PARALLEL_CALLS", "MAX_BOOK_HOURS",
     "MAX_BOOK_COST_USD", "VOLUME_HOURS", "YOUTUBE_COOKIES_FILE", "YOUTUBE_COOKIES_BROWSER",
+    "SCREENSHOT_REVIEW",
 )
 
 
@@ -139,3 +140,17 @@ def _no_closing_parts_check(monkeypatch):
     from app.nodes import write as write_module
 
     monkeypatch.setattr(write_module, "missing_parts", lambda notes, genre: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_vision_calls(monkeypatch):
+    """run_frames asks the vision model about each kept screenshot -- a real
+    NVIDIA call. By default it is "down", so frames are kept unreviewed;
+    tests of the review step stub it themselves."""
+    from app.llm import LLMProviderError
+    from app.nodes import frames as frames_module
+
+    def unavailable(prompt, image_bytes, **kwargs):
+        raise LLMProviderError("no vision calls in unit tests")
+
+    monkeypatch.setattr(frames_module, "call_vision", unavailable)

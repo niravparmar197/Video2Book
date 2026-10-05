@@ -500,6 +500,20 @@ def test_a_box_drawn_table_becomes_a_real_table_and_its_duplicate_is_dropped(tmp
     assert "ascii art -+" in content
 
 
+def test_a_reviewed_screenshot_shows_its_caption_before_the_watch_link(tmp_path):
+    assets = tmp_path / "assets" / "vid1"
+    assets.mkdir(parents=True)
+    shot = assets / "000_00.jpg"
+    shot.write_bytes(b"jpg")
+    screenshots = [{"asset_path": str(shot), "timestamp_seconds": 75.0, "caption": "Whiteboard of the upload_flow"}]
+
+    content = render_chapter("vid1", "Title", "## A\n\nText.\n", tmp_path, screenshots=screenshots).read_text(
+        encoding="utf-8"
+    )
+
+    assert r"Whiteboard of the upload\_flow. \href{https://youtu.be/vid1?t=75}{Screenshot at 01:15" in content
+
+
 def test_find_leaked_latex_reports_macro_names_printed_as_text(tmp_path):
     from app.latex.tex import find_leaked_latex
 

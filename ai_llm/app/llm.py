@@ -191,6 +191,81 @@ def _call_once(
             ) from fallback_error
 
 
+# --- vision ----------------------------------------------------------------
+
+# The NIM catalog id of root AGENTS.md's "nemotron-3-nano-omni" (verified
+# live against GET /v1/models and a real screenshot: ~4-8s per image).
+VISION_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+VISION_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+# Most replies take 4-8s; a stuck one (seen: 120s) is better skipped -- the
+# frame is then kept unreviewed.
+VISION_TIMEOUT_SECONDS = 45
+# The free endpoint often answers 503 "Worker local total request limit
+# reached" for a few seconds; a short retry usually gets through.
+VISION_RETRY_SECONDS = (3, 10)
+
+
+def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - fixed https URL
+        return json.load(response)
+
+
+def call_vision(
+    prompt: str,
+    image_bytes: bytes,
+    settings: Settings | None = None,
+    post: Callable[[str, dict, dict, float], dict] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> str:
+    """Ask the NVIDIA vision model about one JPEG; returns its text reply.
+
+    Shares the NVIDIA pacing with call_writer (one account, one RPM budget).
+    No Gemini fallback, unlike call_writer: screenshot review is optional,
+    and every frame of a long video falling back would spend Gemini's small
+    daily cap that the writer may need. Raises LLMProviderError when every
+    try fails -- callers keep the frame unreviewed.
+    """
+    import base64
+
+    settings = settings or load_settings()
+    post = post or _post_json
+    payload = {
+        "model": VISION_MODEL,
+        "max_tokens": 2048,
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")},
+                    },
+                ],
+            }
+        ],
+    }
+    headers = {"Authorization": f"Bearer {settings.nvidia_api_key}", "Content-Type": "application/json"}
+
+    last_error: Exception | None = None
+    for attempt in range(len(VISION_RETRY_SECONDS) + 1):
+        try:
+            _pace("nvidia", sleep, clock)
+            response = post(VISION_URL, payload, headers, VISION_TIMEOUT_SECONDS)
+            return _extract_text(response["choices"][0]["message"]["content"])
+        except Exception as error:  # noqa: BLE001 - any failure: retry, then give up
+            last_error = error
+            if attempt < len(VISION_RETRY_SECONDS):
+                sleep(VISION_RETRY_SECONDS[attempt])
+    raise LLMProviderError(f"vision model failed: {last_error!r}") from last_error
+
+
 def call_writer(
     prompt: str,
     settings: Settings | None = None,
