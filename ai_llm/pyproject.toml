@@ -11,6 +11,8 @@ dependencies = [
     "faster-whisper>=1.0.0",
     # book.epub / book.md exports (app/export.py)
     "Markdown>=3.5",
+    # traces the vision calls, which bypass LangChain (app/llm.py _post_vision)
+    "langsmith>=0.14",
 ]
 
 [project.optional-dependencies]

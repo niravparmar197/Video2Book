@@ -13,6 +13,7 @@ instead of the whole video.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -390,8 +391,11 @@ def review_frames(frames: list[dict], regrab: Callable[[float], dict | None]) ->
     away when one exists (else kept: its content still matters). Each kept
     frame gets the model's caption. An unreviewable frame is kept unchanged.
     """
+    # Each review runs in a copy of this thread's context, so its LangSmith
+    # trace nests under the frames step instead of becoming its own root.
     with ThreadPoolExecutor(max_workers=_REVIEW_PARALLEL) as pool:
-        verdicts = list(pool.map(lambda frame: review_frame(frame["path"]), frames))
+        futures = [pool.submit(contextvars.copy_context().run, review_frame, frame["path"]) for frame in frames]
+        verdicts = [future.result() for future in futures]
 
     kept: list[dict] = []
     for frame, verdict in zip(frames, verdicts):

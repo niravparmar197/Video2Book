@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from langsmith import traceable
+
 from app.config import Settings, load_settings
 
 logger = logging.getLogger(__name__)
@@ -225,6 +227,49 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
         return json.load(response)
 
 
+def _vision_trace_inputs(inputs: dict) -> dict:
+    """What a vision run shows in LangSmith: the prompt and image size only --
+    never the headers (they carry the API key) or the base64 image (~100KB
+    per frame, hundreds of frames on a long video)."""
+    payload = inputs.get("payload") or {}
+    content = (payload.get("messages") or [{}])[0].get("content") or []
+    prompt = next((part.get("text") for part in content if part.get("type") == "text"), None)
+    image = next((part["image_url"]["url"] for part in content if part.get("type") == "image_url"), "")
+    return {"model": payload.get("model"), "prompt": prompt, "image_base64_chars": len(image)}
+
+
+def _vision_trace_outputs(outputs: Any) -> dict:
+    """The reply text plus token usage in LangSmith's usage_metadata shape, so
+    vision calls count toward a book's tokens like the LangChain calls do."""
+    response = outputs.get("output", outputs) if isinstance(outputs, dict) else outputs
+    if not isinstance(response, dict):
+        return {"output": response}
+    usage = response.get("usage") or {}
+    choices = response.get("choices") or [{}]
+    return {
+        "output": choices[0].get("message", {}).get("content"),
+        "usage_metadata": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        },
+    }
+
+
+@traceable(
+    run_type="llm",
+    name="NVIDIA vision",
+    metadata={"ls_provider": "nvidia", "ls_model_name": VISION_MODEL},
+    process_inputs=_vision_trace_inputs,
+    process_outputs=_vision_trace_outputs,
+)
+def _post_vision(payload: dict, headers: dict, post: Callable[[str, dict, dict, float], dict]) -> dict:
+    """One vision HTTP request, traced to LangSmith as an LLM run (when
+    LANGSMITH_TRACING is on) -- the request bypasses LangChain, so nothing
+    else would record it."""
+    return post(VISION_URL, payload, headers, VISION_TIMEOUT_SECONDS)
+
+
 def call_vision(
     prompt: str,
     image_bytes: bytes,
@@ -268,7 +313,7 @@ def call_vision(
     for attempt in range(len(VISION_RETRY_SECONDS) + 1):
         try:
             _pace("nvidia", sleep, clock)
-            response = post(VISION_URL, payload, headers, VISION_TIMEOUT_SECONDS)
+            response = _post_vision(payload, headers, post)
             return _extract_text(response["choices"][0]["message"]["content"])
         except Exception as error:  # noqa: BLE001 - any failure: retry, then give up
             last_error = error

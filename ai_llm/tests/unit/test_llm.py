@@ -303,6 +303,44 @@ def test_call_vision_retries_a_busy_endpoint_then_returns_the_reply():
     assert image.startswith("data:image/jpeg;base64,")
 
 
+def test_vision_trace_never_records_the_api_key_or_the_image():
+    from app.llm import VISION_MODEL, _vision_trace_inputs
+
+    payload = {
+        "model": VISION_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe it."},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+                ],
+            }
+        ],
+    }
+    traced = _vision_trace_inputs(
+        {"payload": payload, "headers": {"Authorization": "Bearer nvapi-secret"}, "post": object()}
+    )
+
+    assert traced == {"model": VISION_MODEL, "prompt": "Describe it.", "image_base64_chars": len("data:image/jpeg;base64,QUJD")}
+    assert "nvapi-secret" not in repr(traced)
+    assert "QUJD" not in repr(traced)
+
+
+def test_vision_trace_reports_the_reply_and_its_token_usage():
+    from app.llm import _vision_trace_outputs
+
+    response = {
+        "choices": [{"message": {"content": '{"overlay": false}'}}],
+        "usage": {"prompt_tokens": 900, "completion_tokens": 40, "total_tokens": 940},
+    }
+
+    assert _vision_trace_outputs({"output": response}) == {
+        "output": '{"overlay": false}',
+        "usage_metadata": {"input_tokens": 900, "output_tokens": 40, "total_tokens": 940},
+    }
+
+
 def test_call_vision_gives_up_after_its_retries():
     from app.llm import LLMProviderError, call_vision
 

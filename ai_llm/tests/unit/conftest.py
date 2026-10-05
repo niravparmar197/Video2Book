@@ -62,6 +62,9 @@ def _isolated_from_developer_dotenv(monkeypatch):
     monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
     for name in _SETTING_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # A traced function (app.llm._post_vision) must never send a test run to LangSmith.
+    for name in ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2"):
+        monkeypatch.delenv(name, raising=False)
     # Stream-mode tests stub the stream path; the short-video download path
     # would otherwise call real YouTube. Tests of that path set it themselves.
     monkeypatch.setenv("FRAMES_DOWNLOAD_MAX_MINUTES", "0")
