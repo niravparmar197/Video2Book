@@ -3,9 +3,9 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from datetime import datetime, time, timezone
@@ -21,6 +21,7 @@ from api.ai_llm_bridge import get_timings as ai_llm_get_timings
 from api.ai_llm_bridge import decided_book_kind as ai_llm_decided_book_kind
 from api.ai_llm_bridge import load_settings as ai_llm_load_settings
 from api.auth import get_current_user
+from api.book_deletion import delete_book
 from api.checkpointer import get_checkpointer
 from api.config import settings
 from api.db import SessionLocal, get_db
@@ -97,18 +98,14 @@ def _check_daily_spend_alert(db: Session) -> None:
         )
 
 
-@router.post("/youtube", response_model=BookResponse, status_code=201)
-async def create_book(
-    payload: BookCreateRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> Book:
+def _check_in_flight_limit(db: Session, user: User) -> None:
     in_flight = db.execute(
         select(func.count())
         .select_from(Book)
         .where(Book.user_id == user.id, Book.status.in_(_IN_FLIGHT_STATUSES))
     ).scalar_one()
     if in_flight >= settings.max_concurrent_books_per_user:
+        db.rollback()  # releases the create_book lock, if held
         raise HTTPException(
             status_code=429,
             detail=(
@@ -117,6 +114,16 @@ async def create_book(
                 "wait for one to finish before starting another"
             ),
         )
+
+
+@router.post("/youtube", response_model=BookResponse, status_code=201)
+async def create_book(
+    payload: BookCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Book:
+    # Early, cheap refusal -- before the estimate's YouTube round trip.
+    _check_in_flight_limit(db, user)
 
     try:
         estimates = await asyncio.to_thread(ai_llm_estimate_playlist, str(payload.url))
@@ -127,6 +134,12 @@ async def create_book(
     _check_over_budget(estimates)
     total_cost = sum(e.estimated_cost_usd for e in estimates)
 
+    # The binding check: a per-user lock held until this transaction commits,
+    # so concurrent requests from one user count one at a time. Without it, a
+    # load test's 4 simultaneous requests each counted 0 in flight and all 4
+    # books were created past a limit of 3.
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"create_book:{user.id}"})
+    _check_in_flight_limit(db, user)
     book = Book(
         url=str(payload.url), status="queued", user_id=user.id, estimated_cost_usd=total_cost
     )
@@ -192,6 +205,46 @@ async def cancel_book(
     logger.info("book cancelled")
 
     return book
+
+
+_LIST_LIMIT_MAX = 200
+
+
+@router.get("", response_model=list[BookResponse])
+async def list_books(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[Book]:
+    """The user's books, newest first. The web app used to keep this list in
+    the browser only, so another device (or cleared site data) lost it."""
+    limit = max(1, min(limit, _LIST_LIMIT_MAX))
+    return list(
+        db.execute(
+            select(Book)
+            .where(Book.user_id == user.id)
+            .order_by(Book.created_at.desc())
+            .limit(limit)
+            .offset(max(0, offset))
+        ).scalars()
+    )
+
+
+@router.delete("/{book_id}", status_code=204)
+async def delete_book_endpoint(
+    book_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> Response:
+    """Delete a book and everything stored for it (S3 files, local folder,
+    checkpoints). A book the worker is making right now must be cancelled
+    first."""
+    book = get_owned_book(db, book_id, user)
+    if book.status in ("planning", "rendering"):
+        raise HTTPException(
+            status_code=409, detail=f"book is '{book.status}' -- cancel it before deleting"
+        )
+    await delete_book(db, book)
+    return Response(status_code=204)
 
 
 @router.get("/{book_id}", response_model=BookResponse)

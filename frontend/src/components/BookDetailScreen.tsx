@@ -3,6 +3,7 @@ import {
   getBook,
   retryBook,
   cancelBook,
+  deleteBook,
   downloadPdf,
   downloadBookFile,
   ApiError,
@@ -16,7 +17,12 @@ import { StateMessage } from './StateMessage';
 
 interface BookDetailScreenProps {
   bookId: string;
+  /** Called after the book was deleted, so the app can leave this screen. */
+  onDeleted?: () => void;
 }
+
+/** The worker is making the book: it must be cancelled before deleting. */
+const BEING_MADE: Book['status'][] = ['planning', 'rendering'];
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -30,13 +36,15 @@ function formatCreatedAt(iso: string): string {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) => {
+export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId, onDeleted }) => {
   const [book, setBook] = useState<Book | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isConfirmingCancel, setIsConfirmingCancel] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refetch = () => {
@@ -90,6 +98,22 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
       setError(err instanceof ApiError ? err.message : 'Could not cancel book');
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    setIsDeleting(true);
+    setError(null);
+    try {
+      await deleteBook(bookId);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      onDeleted?.();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not delete book');
+      setIsDeleting(false);
     }
   };
 
@@ -260,6 +284,48 @@ export const BookDetailScreen: React.FC<BookDetailScreenProps> = ({ bookId }) =>
             <span className="material-symbols-outlined text-[20px]">refresh</span>
             {isRetrying ? 'Retrying...' : 'Retry'}
           </button>
+        </div>
+      )}
+
+      {!BEING_MADE.includes(book.status) && (
+        <div className="mt-space-md text-center">
+          {isConfirmingDelete ? (
+            <div
+              data-testid="book-detail-delete-confirm"
+              className="inline-flex flex-col items-center gap-2 bg-error-container/40 rounded-lg p-3 border border-error/30"
+            >
+              <span className="font-body-sm text-body-sm text-primary">
+                Delete this book and all its files? This cannot be undone.
+              </span>
+              <div className="flex gap-2">
+                <button
+                  data-testid="book-detail-delete-confirm-yes"
+                  onClick={handleDeleteConfirm}
+                  disabled={isDeleting}
+                  className="py-1.5 px-3 rounded-lg bg-error text-on-error font-label-sm text-label-sm font-semibold disabled:opacity-50"
+                >
+                  {isDeleting ? 'Deleting...' : 'Yes, delete'}
+                </button>
+                <button
+                  data-testid="book-detail-delete-confirm-no"
+                  onClick={() => setIsConfirmingDelete(false)}
+                  disabled={isDeleting}
+                  className="py-1.5 px-3 rounded-lg border border-[#c1c8c3] text-primary font-label-sm text-label-sm"
+                >
+                  Keep it
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              data-testid="book-detail-delete"
+              onClick={() => setIsConfirmingDelete(true)}
+              className="inline-flex items-center gap-1 py-1.5 px-3 rounded-lg text-error font-label-sm text-label-sm hover:bg-error-container/40"
+            >
+              <span className="material-symbols-outlined text-[16px]">delete</span>
+              Delete book
+            </button>
+          )}
         </div>
       )}
 

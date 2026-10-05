@@ -5,6 +5,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { NewBookScreen } from './components/NewBookScreen';
 import { MyBooksScreen } from './components/MyBooksScreen';
 import { BookDetailScreen } from './components/BookDetailScreen';
+import { AccountScreen } from './components/AccountScreen';
 import { getApiKey, clearApiKey } from './lib/api';
 import { getSavedView, setSavedView } from './lib/myBooks';
 
@@ -21,6 +22,7 @@ export default function App() {
   const [selectedBookId, setSelectedBookId] = useState<string | null>(
     savedView?.selectedBookId ?? null
   );
+  const [showAccount, setShowAccount] = useState(false);
 
   const persistView = (tab: TabType, bookId: string | null) => {
     setSavedView({ activeTab: tab, selectedBookId: bookId });
@@ -30,16 +32,19 @@ export default function App() {
     clearApiKey();
     setIsLoggedIn(false);
     setSelectedBookId(null);
+    setShowAccount(false);
     setSavedView({ activeTab: 'new', selectedBookId: null });
   };
 
   const handleSelectTab = (tab: TabType) => {
+    setShowAccount(false);
     setSelectedBookId(null);
     setActiveTab(tab);
     persistView(tab, null);
   };
 
   const handleSelectBook = (bookId: string) => {
+    setShowAccount(false);
     setSelectedBookId(bookId);
     persistView(activeTab, bookId);
   };
@@ -49,7 +54,19 @@ export default function App() {
     persistView(activeTab, bookId);
   };
 
-  const breadcrumb = selectedBookId ? 'Book' : activeTab === 'new' ? 'New Book' : 'My Books';
+  const handleBookDeleted = () => {
+    setSelectedBookId(null);
+    setActiveTab('books');
+    persistView('books', null);
+  };
+
+  const breadcrumb = showAccount
+    ? 'Account'
+    : selectedBookId
+      ? 'Book'
+      : activeTab === 'new'
+        ? 'New Book'
+        : 'My Books';
 
   if (!isLoggedIn) {
     return (
@@ -63,11 +80,18 @@ export default function App() {
 
   return (
     <div className="bg-[#faf9f5] font-body-md text-body-md text-[#1b1c1a] flex flex-col min-h-screen">
-      <Header breadcrumb={breadcrumb} isLoggedIn={isLoggedIn} onLogout={handleLogout} />
+      <Header
+        breadcrumb={breadcrumb}
+        isLoggedIn={isLoggedIn}
+        onLogout={handleLogout}
+        onOpenAccount={() => setShowAccount(true)}
+      />
 
       <main className="flex-1 w-full bg-[#faf9f5] pt-16 px-4 max-w-lg mx-auto">
-        {selectedBookId ? (
-          <BookDetailScreen bookId={selectedBookId} />
+        {showAccount ? (
+          <AccountScreen onAccountDeleted={handleLogout} />
+        ) : selectedBookId ? (
+          <BookDetailScreen bookId={selectedBookId} onDeleted={handleBookDeleted} />
         ) : activeTab === 'new' ? (
           <NewBookScreen onBookCreated={handleBookCreated} />
         ) : (

@@ -18,13 +18,13 @@ def test_upload_pdf_then_presigned_url_round_trips_bytes(tmp_path):
     assert fetched == b"%PDF-1.4 test bytes"
 
 
-def test_delete_pdf_removes_the_object(tmp_path):
+def test_delete_object_removes_the_object(tmp_path):
     book_id = f"test-{uuid.uuid4()}"
     local_pdf = tmp_path / "book.pdf"
     local_pdf.write_bytes(b"%PDF-1.4 to be deleted")
 
     key = storage.upload_pdf(book_id, local_pdf)
-    storage.delete_pdf(key)
+    storage.delete_object(key)
 
     url = storage.presigned_url(key, expires_in=60)
     try:
@@ -69,4 +69,4 @@ def test_a_pdf_over_the_multipart_threshold_uploads_with_s3mock(tmp_path):
         head = storage._client().head_object(Bucket=storage.settings.s3_bucket, Key=key)
         assert head["ContentLength"] == big.stat().st_size
     finally:
-        storage.delete_pdf(key)
+        storage.delete_object(key)

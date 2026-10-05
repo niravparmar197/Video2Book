@@ -58,5 +58,30 @@ class Settings:
     # server explicitly allows it via CORS.
     frontend_origin: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 
+    # Sign-up. With an invite code set, POST /users needs it -- otherwise
+    # anyone could make unlimited accounts and run books in parallel past
+    # MAX_CONCURRENT_BOOKS_PER_USER on the shared free LLM quota. (Email
+    # verification would need a mail server.) Sign-ups per IP per hour are
+    # capped either way; 0 = no cap.
+    signup_invite_code: str = os.environ.get("SIGNUP_INVITE_CODE", "")
+    signup_limit_per_ip_per_hour: int = int(os.environ.get("SIGNUP_LIMIT_PER_IP_PER_HOUR", "5"))
+
+    # API keys older than this are refused until rotated (POST
+    # /users/me/api-key). 0 = keys never expire.
+    api_key_max_age_days: int = int(os.environ.get("API_KEY_MAX_AGE_DAYS", "90"))
+
+    # The worker's daily housekeeping: retention (delete books older than
+    # PDF_RETENTION_DAYS: S3 files + local folder) and a Postgres backup.
+    housekeeping_interval_hours: float = float(os.environ.get("HOUSEKEEPING_INTERVAL_HOURS", "24"))
+    # Backups: pg_dump -> gzip -> S3 under backups/, the newest N kept.
+    # "" disables them (e.g. RDS with automated backups).
+    backup_command: str = os.environ.get("BACKUP_COMMAND", "pg_dump")
+    backups_to_keep: int = int(os.environ.get("BACKUPS_TO_KEEP", "14"))
+
+    # LangSmith tracing of every pipeline LLM call, tagged with the book id.
+    # Needs LANGSMITH_API_KEY; the LangChain clients read these from env.
+    langsmith_tracing: bool = os.environ.get("LANGSMITH_TRACING", "").lower() in {"1", "true", "yes"}
+    langsmith_project: str = os.environ.get("LANGSMITH_PROJECT", "video2book")
+
 
 settings = Settings()

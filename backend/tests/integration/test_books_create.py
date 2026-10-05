@@ -284,3 +284,30 @@ def test_create_book_rejects_an_unknown_book_type(client, auth_headers):
     )
 
     assert resp.status_code == 422
+
+
+def test_the_per_user_limit_holds_when_requests_arrive_together(client, make_user, monkeypatch):
+    """A load test sent 4 requests at once and all 4 books were created past
+    a limit of 3: each counted the in-flight books before any was saved."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    import api.routers.books as books_module
+
+    def slow_estimate(url, chunk_minutes=None):
+        time.sleep(0.3)  # the real estimate is a YouTube round trip
+        return [SimpleNamespace(duration_seconds=600, estimated_cost_usd=0.0)]
+
+    monkeypatch.setattr(books_module, "ai_llm_estimate_playlist", slow_estimate)
+    _, _, headers = make_user()
+
+    def create(_):
+        return client.post(
+            "/books/youtube", json={"url": "https://www.youtube.com/watch?v=abc"}, headers=headers
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        codes = sorted(pool.map(create, range(4)))
+
+    assert codes == [201, 201, 201, 429]

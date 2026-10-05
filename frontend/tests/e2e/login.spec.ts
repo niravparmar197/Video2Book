@@ -13,6 +13,7 @@ test.describe('login screen', () => {
     await page.screenshot({ path: 'tests/screenshots/task3-01-login-empty.png' });
 
     await page.getByTestId('login-email-input').fill('dev@example.com');
+    await page.getByTestId('login-accept-terms').check();
     await page.getByTestId('login-register-submit').click();
 
     await expect(page.getByTestId('login-issued-key')).toHaveText('test-api-key-abc123');
@@ -44,8 +45,36 @@ test.describe('login screen', () => {
 
     await page.goto('/');
     await page.getByTestId('login-email-input').fill('dev@example.com');
+    await page.getByTestId('login-accept-terms').check();
     await page.getByTestId('login-register-submit').click();
 
     await expect(page.getByTestId('login-error')).toHaveText('email already registered');
   });
+});
+
+test('sign-up needs the terms accepted and sends them with the invite code', async ({ page }) => {
+  await installApiMocks(page);
+  let sentBody: unknown = null;
+  await page.route(`${API_BASE}/users`, (route) => {
+    sentBody = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ user_id: 'u1', api_key: 'k1' }),
+    });
+  });
+  await page.goto('/');
+
+  await page.getByTestId('login-email-input').fill('dev@example.com');
+  await page.getByTestId('login-invite-input').fill('team-code');
+  await expect(page.getByTestId('login-register-submit')).toBeDisabled();
+
+  await page.getByTestId('login-show-terms').click();
+  await expect(page.getByTestId('terms-of-use')).toContainText('right to turn into notes');
+
+  await page.getByTestId('login-accept-terms').check();
+  await page.getByTestId('login-register-submit').click();
+
+  await expect(page.getByTestId('login-issued-key')).toHaveText('k1');
+  expect(sentBody).toEqual({ email: 'dev@example.com', accept_terms: true, invite_code: 'team-code' });
 });

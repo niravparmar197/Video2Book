@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { createBook, ApiError, type BookGenre } from '../lib/api';
-import { addTrackedBookId } from '../lib/myBooks';
 import { StateMessage } from './StateMessage';
 
 interface NewBookScreenProps {
@@ -19,7 +18,6 @@ export const NewBookScreen: React.FC<NewBookScreenProps> = ({ onBookCreated }) =
     setIsSubmitting(true);
     try {
       const book = await createBook(url.trim(), genre);
-      addTrackedBookId(book.id);
       onBookCreated(book.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reach the backend');

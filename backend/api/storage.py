@@ -1,6 +1,7 @@
 """S3 (or an S3-compatible service, e.g. the local S3Mock container)
-storage for rendered PDFs. `Book.pdf_path` holds the object key this
-module returns, not a local filesystem path, once a render succeeds.
+storage for rendered books (PDF, EPUB, Markdown) and database backups.
+`Book.pdf_path` holds the object key this module returns, not a local
+filesystem path, once a render succeeds.
 """
 
 from pathlib import Path
@@ -92,6 +93,26 @@ def upload_book_files(book_id: str, output_dir: str | Path) -> list[str]:
     return uploaded
 
 
+def upload_object(key: str, local_path: str | Path, content_type: str | None = None) -> None:
+    client = _client()
+    _ensure_bucket(client)
+    extra = {"ContentType": content_type} if content_type else None
+    client.upload_file(str(local_path), settings.s3_bucket, key, ExtraArgs=extra)
+
+
+def list_keys(prefix: str) -> list[str]:
+    client = _client()
+    _ensure_bucket(client)
+    keys: list[str] = []
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=settings.s3_bucket, Prefix=prefix):
+        keys.extend(item["Key"] for item in page.get("Contents", []))
+    return keys
+
+
+def delete_object(key: str) -> None:
+    _client().delete_object(Bucket=settings.s3_bucket, Key=key)
+
+
 def object_exists(key: str) -> bool:
     try:
         _client().head_object(Bucket=settings.s3_bucket, Key=key)
@@ -109,9 +130,16 @@ def presigned_url(key: str, expires_in: int = 900) -> str:
     )
 
 
-def delete_pdf(key: str) -> None:
+def delete_book_files(book_id: str, pdf_path: str | None = None) -> None:
+    """Delete everything stored for a book: the PDF and the e-book/Markdown
+    copies. Retention used to delete only the PDF and left book.epub and
+    book.md behind. Deleting a missing key is not an error in S3."""
     client = _client()
-    client.delete_object(Bucket=settings.s3_bucket, Key=key)
+    keys = {pdf_key(book_id), *(book_file_key(book_id, file_format) for file_format in BOOK_FILE_FORMATS)}
+    if pdf_path:
+        keys.add(pdf_path)
+    for key in sorted(keys):
+        client.delete_object(Bucket=settings.s3_bucket, Key=key)
 
 
 def check_s3() -> bool:

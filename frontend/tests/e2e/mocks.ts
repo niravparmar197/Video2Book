@@ -28,6 +28,28 @@ export async function installApiMocks(page: Page): Promise<void> {
   // block it so tests fall back to system fonts instantly instead of
   // depending on an external CDN's latency.
   await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (route) => route.abort());
+
+  // GET /books (the user's book list) is empty unless seedTrackedBooks() says otherwise.
+  await page.route(BOOK_LIST_URL, (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+  });
+}
+
+/** GET /books with or without a query string, never /books/<id>. */
+const BOOK_LIST_URL = /^http:\/\/localhost:8000\/books(\?.*)?$/;
+
+// Per page: the Book each test returns from GET /books/<id> via mockJson(),
+// so the GET /books list can be answered with the same objects.
+const mockedBooks = new WeakMap<Page, Map<string, unknown>>();
+
+function booksFor(page: Page): Map<string, unknown> {
+  let books = mockedBooks.get(page);
+  if (!books) {
+    books = new Map();
+    mockedBooks.set(page, books);
+  }
+  return books;
 }
 
 /**
@@ -46,9 +68,19 @@ export async function loginAs(page: Page, apiKey = 'test-api-key'): Promise<void
   await page.reload();
 }
 
-/** Seeds the client-side "my books" index MyBooksScreen reads from. */
+/**
+ * The user's books for MyBooksScreen's GET /books: each id's Book is the one
+ * the test mocks for GET /books/<id> with mockJson() (looked up when the list
+ * is requested, so it may be mocked after this call). Ids with no 200 mock
+ * are left out, as the server would.
+ */
 export async function seedTrackedBooks(page: Page, ids: string[]): Promise<void> {
-  await page.evaluate((ids) => localStorage.setItem('v2b_my_book_ids', JSON.stringify(ids)), ids);
+  const books = booksFor(page);
+  await page.route(BOOK_LIST_URL, (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const list = ids.map((id) => books.get(id)).filter((book) => book !== undefined);
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(list) });
+  });
 }
 
 /**
@@ -77,6 +109,8 @@ export async function mockJson(
   status: number,
   body: unknown
 ): Promise<void> {
+  const bookId = urlGlob.match(/^http:\/\/localhost:8000\/books\/([^/?*]+)$/)?.[1];
+  if (method === 'GET' && status === 200 && bookId) booksFor(page).set(bookId, body);
   await page.route(urlGlob, (route) => {
     if (route.request().method() !== method) return route.fallback();
     return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });

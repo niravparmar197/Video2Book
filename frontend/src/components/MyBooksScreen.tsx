@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { getBook } from '../lib/api';
+import { ApiError, listBooks } from '../lib/api';
 import { ACTIVE_STATUSES, bookTitle } from '../lib/book';
-import { FilterKey, getSavedFilter, getTrackedBookIds, setSavedFilter } from '../lib/myBooks';
+import { FilterKey, getSavedFilter, setSavedFilter } from '../lib/myBooks';
 import { Book } from '../types';
 import { StateMessage } from './StateMessage';
 
@@ -57,32 +57,16 @@ function sortByCreatedAtDesc(books: Book[]): Book[] {
 export const MyBooksScreen: React.FC<MyBooksScreenProps> = ({ onSelectBook }) => {
   const [books, setBooks] = useState<Book[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>(() => getSavedFilter());
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    const ids = getTrackedBookIds();
-    if (ids.length === 0) {
-      setIsLoading(false);
-      return;
-    }
-    Promise.all(
-      ids.map((id) =>
-        getBook(id).catch<Book>(() => ({
-          id,
-          status: 'failed',
-          pdf_path: null,
-          error_message: 'not found',
-          estimated_cost_usd: 0,
-          url: '',
-          created_at: '',
-          videos: [],
-        }))
-      )
-    ).then((results) => {
-      setBooks(results);
-      setIsLoading(false);
-    });
+    // From the server (GET /books), so the list is the same on every device.
+    listBooks()
+      .then(setBooks)
+      .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Could not reach the backend'))
+      .finally(() => setIsLoading(false));
   }, []);
 
   const sortedBooks = useMemo(() => sortByCreatedAtDesc(books), [books]);
@@ -93,6 +77,10 @@ export const MyBooksScreen: React.FC<MyBooksScreenProps> = ({ onSelectBook }) =>
 
   if (isLoading) {
     return <StateMessage variant="loading" message="Loading your books..." />;
+  }
+
+  if (loadError) {
+    return <StateMessage variant="error" message={loadError} testId="my-books-error" />;
   }
 
   if (books.length === 0) {

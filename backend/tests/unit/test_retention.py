@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from api import storage
 from api.models import Book
-from api.retention import delete_expired_pdfs, find_expired_books
+from api.retention import delete_expired_books, find_expired_books
 
 
 def _make_book(db_session, user, tmp_path, *, age_days: int) -> Book:
@@ -42,7 +42,7 @@ def test_find_expired_books_only_returns_books_past_the_window(db_session, user,
     assert fresh.id not in ids
 
 
-def test_delete_expired_pdfs_removes_s3_object_and_clears_pdf_path(
+def test_delete_expired_books_removes_s3_object_and_clears_pdf_path(
     db_session, user, tmp_path, monkeypatch
 ):
     from types import SimpleNamespace
@@ -60,7 +60,7 @@ def test_delete_expired_pdfs_removes_s3_object_and_clears_pdf_path(
     expired_key = expired.pdf_path
     fresh_key = fresh.pdf_path
 
-    deleted_count = delete_expired_pdfs()
+    deleted_count = delete_expired_books()
 
     assert deleted_count == 1
 
@@ -77,3 +77,64 @@ def test_delete_expired_pdfs_removes_s3_object_and_clears_pdf_path(
 
     fresh_url = storage.presigned_url(fresh_key, expires_in=60)
     assert urllib.request.urlopen(fresh_url).read() == b"%PDF-1.4 retention test"
+
+
+def test_retention_removes_every_file_of_an_expired_book(db_session, user, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import api.book_deletion as deletion_module
+    import api.retention as retention_module
+
+    monkeypatch.setattr(retention_module, "settings", replace(retention_module.settings, pdf_retention_days=30))
+    monkeypatch.setattr(deletion_module, "settings", replace(deletion_module.settings, output_root=str(tmp_path / "out")))
+    expired = _make_book(db_session, user, tmp_path, age_days=40)
+    for name in ("book.epub", "book.md"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    storage.upload_book_files(expired.id, tmp_path)
+    local = tmp_path / "out" / expired.id / "work"
+    local.mkdir(parents=True)
+    (local / "chunk.json").write_text("{}", encoding="utf-8")
+
+    assert retention_module.delete_expired_books() == 1
+
+    for file_format in ("epub", "md"):
+        assert not storage.object_exists(storage.book_file_key(expired.id, file_format))
+    assert not storage.object_exists(storage.pdf_key(expired.id))
+    assert not (tmp_path / "out" / expired.id).exists()
+    # Nothing left to remove: not picked up again.
+    assert retention_module.find_expired_books(db_session, 30) == []
+
+
+def test_remove_empty_output_dirs_keeps_recent_and_non_empty_ones(tmp_path):
+    import os
+    import time
+
+    from api.retention import remove_empty_output_dirs
+
+    old_empty, new_empty, old_full = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for folder in (old_empty, new_empty, old_full):
+        folder.mkdir()
+    (old_full / "book.pdf").write_bytes(b"x")
+    hours_ago = time.time() - 7200
+    for folder in (old_empty, old_full):
+        os.utime(folder, (hours_ago, hours_ago))
+
+    assert remove_empty_output_dirs(tmp_path) == 1
+    assert not old_empty.exists() and new_empty.exists() and old_full.exists()
+
+
+def test_remove_orphan_output_dirs_deletes_folders_of_books_that_no_longer_exist(tmp_path):
+    import os
+    import time
+
+    from api.retention import remove_orphan_output_dirs
+
+    kept, orphan, fresh_orphan = tmp_path / "book-1", tmp_path / "gone-1", tmp_path / "gone-2"
+    for folder in (kept, orphan, fresh_orphan):
+        (folder / "work").mkdir(parents=True)
+    hours_ago = time.time() - 7200
+    for folder in (kept, orphan):
+        os.utime(folder, (hours_ago, hours_ago))
+
+    assert remove_orphan_output_dirs({"book-1"}, tmp_path) == 1
+    assert kept.exists() and not orphan.exists() and fresh_orphan.exists()

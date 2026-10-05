@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +60,12 @@ def _source_video_ids(chapter: dict) -> list[str]:
 
 
 def _save_outline(book_id: str, videos: list[dict], chapters: list[dict]) -> None:
-    """Upsert Video/Chapter rows from a completed `plan` phase's result."""
+    """Upsert Video/Chapter rows from a completed `plan` phase's result.
+    Nothing to save for a book deleted while it was being planned."""
     db = SessionLocal()
     try:
+        if db.get(Book, book_id) is None:
+            return
         existing_videos = {
             v.video_id: v
             for v in db.execute(select(Video).where(Video.book_id == book_id)).scalars()
@@ -118,7 +122,21 @@ def _finalize_pdf(book_id: str, local_pdf_path: Path) -> str:
     """Uploads the rendered PDF to S3 and deletes the local copy -- the
     rest of output/<book_id>/ (checkpoint db, chunk cache, chapter .tex
     files) is left alone since a future retry still needs it. Returns the
-    S3 object key, which is what `Book.pdf_path` is set to."""
+    S3 object key, which is what `Book.pdf_path` is set to.
+
+    A book deleted while its job was still running (cancel, then delete)
+    gets nothing uploaded -- its files would be orphans nobody can reach --
+    and its local folder is removed again."""
+    db = SessionLocal()
+    try:
+        deleted = db.get(Book, book_id) is None
+    finally:
+        db.close()
+    if deleted:
+        from api.book_deletion import book_output_dir
+
+        shutil.rmtree(book_output_dir(book_id), ignore_errors=True)
+        return ""
     key = storage.upload_pdf(book_id, local_pdf_path)
     # book.epub / book.md sit next to the PDF; optional extras, so a failed
     # upload is logged and never fails a finished book.
@@ -133,6 +151,29 @@ def _finalize_pdf(book_id: str, local_pdf_path: Path) -> str:
 
 
 async def process_run_book(job: Any, token: str | None = None) -> dict:
+    """BullMQ processor for the `run_book` queue -- see _process_run_book.
+
+    With LANGSMITH_TRACING on, every LLM call the pipeline makes for this
+    job is traced with the book id and phase as metadata (the context
+    reaches ai_llm's worker threads: asyncio.to_thread and graph.py's
+    pools copy contextvars), so a book's calls, latency and errors can be
+    found on the LangSmith dashboard.
+    """
+    if not settings.langsmith_tracing:
+        return await _process_run_book(job, token)
+    from langsmith import tracing_context
+
+    phase = job.data.get("phase", "render")
+    with tracing_context(
+        enabled=True,
+        project_name=settings.langsmith_project,
+        metadata={"book_id": job.data["book_id"], "phase": phase},
+        tags=[f"phase:{phase}"],
+    ):
+        return await _process_run_book(job, token)
+
+
+async def _process_run_book(job: Any, token: str | None = None) -> dict:
     """BullMQ processor for the `run_book` queue.
 
     Dispatches on `job.data["phase"]`:

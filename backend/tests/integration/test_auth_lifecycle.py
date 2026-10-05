@@ -10,7 +10,7 @@ def _settings_with_limit(limit: int) -> Settings:
 
 
 def _signup(client, email: str) -> dict:
-    resp = client.post("/users", json={"email": email})
+    resp = client.post("/users", json={"email": email, "accept_terms": True})
     assert resp.status_code == 201
     return {"X-API-Key": resp.json()["api_key"]}
 

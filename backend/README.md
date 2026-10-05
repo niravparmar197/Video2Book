@@ -210,17 +210,34 @@ no-auth S3-compatible service instead. In a real deploy, set
 `S3_ENDPOINT_URL=` (empty) so `boto3` talks to actual AWS S3 — every
 other S3 env var doubles as real AWS credentials at that point.
 
-**Retention**: `PDF_RETENTION_DAYS` (default 30) plus a script that
-actually deletes expired objects — not just a documented policy:
+**Retention**: `PDF_RETENTION_DAYS` (default 30). For every finished book
+older than that, everything stored for it is deleted — the PDF, `book.epub`
+and `book.md` in S3, the worker's local `output/<book_id>/` folder and its
+checkpoints — and `Book.pdf_path` is cleared (the row stays). Empty leftover
+folders in `OUTPUT_ROOT` are removed too. The worker runs it once a day
+(`HOUSEKEEPING_INTERVAL_HOURS`, one worker per interval via a Redis key);
+by hand:
 
 ```
 python -m api.retention
-# Deleted 3 expired PDF(s) older than 30 day(s).
+# Cleared files of 3 book(s) older than 30 day(s); removed 0 empty folder(s).
 ```
 
-Deletes the S3 object and clears `Book.pdf_path` for every book whose
-`updated_at` is older than the window. Not scheduled by this sprint — run
-it by hand, or wire it into a cron job / scheduled task at deploy time.
+**Backups**: the same daily housekeeping runs `pg_dump` → gzip → S3
+`backups/`, keeping the newest `BACKUPS_TO_KEEP`. Needs the PostgreSQL client
+tools where the worker runs; set `BACKUP_COMMAND=` (empty) on RDS, whose
+automated backups replace it. By hand: `python -m api.backup`.
+
+**Accounts**: sign-up needs `accept_terms: true` (stored as
+`terms_accepted_at`), an invite code when `SIGNUP_INVITE_CODE` is set, and
+is capped per IP per hour. Keys expire after `API_KEY_MAX_AGE_DAYS` and are
+rotated with `POST /users/me/api-key` (works with an expired key).
+`GET /books` lists a user's books; `DELETE /books/{id}` and
+`DELETE /users/me` remove books/accounts with every file (books still being
+made must be cancelled first).
+
+**Load test**: `python scripts/load_test.py --users 3 --books 2 --url <short video>`
+against a running API + worker — real books, real LLM calls.
 
 ## Error tracking + worker heartbeat (v6)
 

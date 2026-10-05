@@ -56,8 +56,36 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
-export function registerUser(email: string): Promise<{ user_id: string; api_key: string }> {
-  return request('/users', { method: 'POST', body: { email }, auth: false });
+export function registerUser(
+  email: string,
+  acceptTerms: boolean,
+  inviteCode?: string
+): Promise<{ user_id: string; api_key: string }> {
+  return request('/users', {
+    method: 'POST',
+    body: { email, accept_terms: acceptTerms, invite_code: inviteCode || null },
+    auth: false,
+  });
+}
+
+/** A new key for this account; the old one stops working at once. */
+export function rotateApiKey(): Promise<{ api_key: string; expires_at: string | null }> {
+  return request('/users/me/api-key', { method: 'POST' });
+}
+
+/** Deletes the account and every book in it, with all their files. */
+export function deleteAccount(): Promise<void> {
+  return request('/users/me', { method: 'DELETE' });
+}
+
+/** The user's books, newest first, from the server (any device). */
+export function listBooks(limit = 100): Promise<Book[]> {
+  return request(`/books?limit=${limit}`);
+}
+
+/** Deletes a book and everything stored for it. */
+export function deleteBook(bookId: string): Promise<void> {
+  return request(`/books/${bookId}`, { method: 'DELETE' });
 }
 
 /** The kind of book: `auto` lets the backend decide from the video. */

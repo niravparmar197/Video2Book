@@ -29,6 +29,7 @@ test('core flow stays within a 375px-wide viewport with no horizontal scroll', a
 
   await mockJson(page, 'POST', `${API_BASE}/users`, 201, { user_id: 'user-1', api_key: 'test-key-mobile' });
   await page.getByTestId('login-email-input').fill('dev@example.com');
+  await page.getByTestId('login-accept-terms').check();
   await page.getByTestId('login-register-submit').click();
   await assertNoHorizontalScroll(page);
   await assertFullyInViewport(page.getByTestId('login-continue-button'));

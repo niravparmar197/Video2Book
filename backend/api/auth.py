@@ -10,10 +10,12 @@ isn't the threat model for an already-256-bit random token.
 
 import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
+from api.config import settings
 from api.db import get_db
 from api.models import User
 
@@ -26,9 +28,7 @@ def hash_api_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-def get_current_user(
-    x_api_key: str | None = Header(default=None), db: Session = Depends(get_db)
-) -> User:
+def _user_for_key(x_api_key: str | None, db: Session) -> User:
     if not x_api_key:
         raise HTTPException(status_code=401, detail="missing X-API-Key header")
 
@@ -37,3 +37,31 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="invalid API key")
 
     return user
+
+
+def key_expired(user: User, now: datetime | None = None) -> bool:
+    if settings.api_key_max_age_days <= 0 or user.api_key_created_at is None:
+        return False
+    issued = user.api_key_created_at
+    if issued.tzinfo is None:
+        issued = issued.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - issued > timedelta(days=settings.api_key_max_age_days)
+
+
+def get_current_user(
+    x_api_key: str | None = Header(default=None), db: Session = Depends(get_db)
+) -> User:
+    """The key's owner; a key older than API_KEY_MAX_AGE_DAYS is refused
+    until rotated with POST /users/me/api-key."""
+    user = _user_for_key(x_api_key, db)
+    if key_expired(user):
+        raise HTTPException(status_code=401, detail="API key expired -- rotate it with POST /users/me/api-key")
+    return user
+
+
+def get_user_for_rotation(
+    x_api_key: str | None = Header(default=None), db: Session = Depends(get_db)
+) -> User:
+    """Like get_current_user but accepts an expired key: rotating is how an
+    expired user gets a working key back."""
+    return _user_for_key(x_api_key, db)

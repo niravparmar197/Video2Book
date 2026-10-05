@@ -84,8 +84,8 @@ def test_add_example_takes_a_books_first_chunk(eval_dir, tmp_path):
     assert len(example["transcript"]) == 15_000
 
 
-def test_each_example_is_judged_twice_and_averaged(monkeypatch):
-    scores = iter([6, 9])
+def test_each_example_is_judged_three_times_and_averaged(monkeypatch):
+    scores = iter([6, 9, 9])
     monkeypatch.setattr(eval_module, "call_writer", lambda prompt, **kw: "## A\n- x")
     monkeypatch.setattr(
         eval_module, "run_verify", lambda t, n: verify_module.VerifyResult(score=next(scores), feedback="f")
@@ -93,7 +93,7 @@ def test_each_example_is_judged_twice_and_averaged(monkeypatch):
 
     result = eval_module.score_example({"id": "v1", "genre": "lecture", "topics": [], "transcript": "t"})
 
-    assert result["score"] == 7.5
+    assert result["score"] == 8
 
 
 def test_a_changed_dataset_starts_a_new_baseline_instead_of_comparing(eval_dir, monkeypatch):
@@ -119,3 +119,47 @@ def test_a_baseline_without_a_dataset_fingerprint_is_not_compared(eval_dir, monk
 
     baseline = json.loads((eval_dir / "baseline.json").read_text(encoding="utf-8"))
     assert baseline["average"] == 7 and baseline["dataset"] == "v0,v1"
+
+
+def _baseline(eval_dir, scores):
+    payload = {"average": sum(scores.values()) / len(scores), "date": "d", "dataset": ",".join(sorted(scores)), "scores": scores}
+    (eval_dir / "baseline.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_small_drop_within_the_noise_passes(eval_dir, monkeypatch):
+    _write_dataset(eval_dir, n=2)
+    _baseline(eval_dir, {"v0": 8.1, "v1": 8.1})
+    _judge_scores(monkeypatch, 8)
+    monkeypatch.setenv("EVAL_ON_RELEASE", "true")
+
+    assert eval_module.main([]) == 0  # -0.1 on every example: under the 0.25 floor
+
+
+def test_a_consistent_drop_on_every_example_is_blocked(eval_dir, monkeypatch):
+    _write_dataset(eval_dir, n=2)
+    _baseline(eval_dir, {"v0": 8.0, "v1": 8.0})
+    _judge_scores(monkeypatch, 7)
+    monkeypatch.setenv("EVAL_ON_RELEASE", "true")
+
+    assert eval_module.main([]) == 1
+
+
+def test_paired_change_and_the_noise_threshold():
+    change, error, compared = eval_module.paired_change({"a": 7, "b": 9, "c": 6}, {"a": 8, "b": 6, "c": 9})
+
+    assert compared == 3 and round(change, 2) == -0.33
+    assert error > 1  # the per-example changes disagree: -1, +3, -3
+    assert not eval_module.is_real_drop(change, error)
+    assert eval_module.is_real_drop(-0.5, 0.1)
+
+
+def test_ref_compares_example_by_example_against_that_commit(eval_dir, monkeypatch):
+    _write_dataset(eval_dir, n=2)
+    _judge_scores(monkeypatch, 6)
+    monkeypatch.setattr(eval_module, "run_at_ref", lambda ref: {"v0": 8.0, "v1": 8.0})
+    monkeypatch.setenv("EVAL_ON_RELEASE", "true")
+    out = eval_dir / "scores.json"
+
+    assert eval_module.main(["--ref", "HEAD~1", "--json", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8")) == {"v0": 6, "v1": 6}
+    assert not (eval_dir / "baseline.json").exists()  # an A/B never writes a baseline by itself

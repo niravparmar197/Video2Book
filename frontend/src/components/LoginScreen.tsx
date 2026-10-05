@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { registerUser, setApiKey, ApiError } from '../lib/api';
 import { StateMessage } from './StateMessage';
+import { TermsOfUse } from './TermsOfUse';
 
 interface LoginScreenProps {
   onLoggedIn: () => void;
@@ -9,6 +10,9 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoggedIn }) => {
   const [mode, setMode] = useState<'register' | 'paste'>('register');
   const [email, setEmail] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [acceptTerms, setAcceptTerms] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
   const [pastedKey, setPastedKey] = useState('');
   const [issuedKey, setIssuedKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -19,7 +23,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoggedIn }) => {
     setError(null);
     setIsSubmitting(true);
     try {
-      const { api_key } = await registerUser(email);
+      const { api_key } = await registerUser(email, acceptTerms, inviteCode.trim());
       setIssuedKey(api_key);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reach the backend');
@@ -108,10 +112,41 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoggedIn }) => {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full px-3 py-2.5 bg-white border border-[#c1c8c3] rounded-lg text-body-md text-primary focus:outline-none focus:border-[#006c49]"
           />
+          <input
+            data-testid="login-invite-input"
+            type="text"
+            placeholder="Invite code (if you were given one)"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value)}
+            className="w-full px-3 py-2.5 bg-white border border-[#c1c8c3] rounded-lg text-body-md text-primary focus:outline-none focus:border-[#006c49]"
+          />
+          <label className="flex items-start gap-2 font-body-sm text-body-sm text-on-surface-variant">
+            <input
+              data-testid="login-accept-terms"
+              type="checkbox"
+              required
+              checked={acceptTerms}
+              onChange={(e) => setAcceptTerms(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              I accept the{' '}
+              <button
+                type="button"
+                data-testid="login-show-terms"
+                onClick={() => setShowTerms((shown) => !shown)}
+                className="underline text-primary"
+              >
+                Terms of Use
+              </button>
+              , including that I have the right to use the videos I submit.
+            </span>
+          </label>
+          {showTerms && <TermsOfUse />}
           <button
             data-testid="login-register-submit"
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || !acceptTerms}
             className="w-full py-3 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-title-md text-title-md font-semibold transition-all active:scale-[0.98] disabled:opacity-50"
           >
             {isSubmitting ? 'Creating account...' : 'Create account'}

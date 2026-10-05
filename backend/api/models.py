@@ -33,6 +33,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     api_key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # When the current key was issued (expiry: API_KEY_MAX_AGE_DAYS; rotate
+    # with POST /users/me/api-key).
+    api_key_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # When the user accepted the terms of use at sign-up (None: before terms).
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Book(Base):

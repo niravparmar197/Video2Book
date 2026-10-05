@@ -6,11 +6,20 @@ from pydantic import BaseModel, ConfigDict, EmailStr, HttpUrl
 
 class UserCreateRequest(BaseModel):
     email: EmailStr
+    # Must be true: the user takes responsibility for having the rights to
+    # the videos they submit (terms of use).
+    accept_terms: bool = False
+    invite_code: str | None = None
 
 
 class UserCreateResponse(BaseModel):
     user_id: str
     api_key: str
+
+
+class ApiKeyResponse(BaseModel):
+    api_key: str
+    expires_at: datetime | None = None
 
 
 class BookCreateRequest(BaseModel):

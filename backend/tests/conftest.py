@@ -13,6 +13,9 @@ os.environ.setdefault("OUTPUT_ROOT", "./test_output")
 # queue name, so tests never sit in front of real work and are never
 # processed by a real worker either. See api/queue.py's QUEUE_NAME comment.
 os.environ.setdefault("QUEUE_NAME", "run_book_test")
+# Every test signs up from the same TestClient address; the per-IP limit has
+# its own tests (tests/unit/test_signup_limit.py).
+os.environ.setdefault("SIGNUP_LIMIT_PER_IP_PER_HOUR", "0")
 
 import io
 import json

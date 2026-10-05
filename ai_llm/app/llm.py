@@ -6,11 +6,14 @@ chain. Claude is not a runtime option; no key is available.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any, Callable
 
 from app.config import Settings, load_settings
+
+logger = logging.getLogger(__name__)
 
 WRITER_MODELS = {
     # nemotron-3-super-120b-a12b reached end of life 2026-10-03 (verified
@@ -180,6 +183,14 @@ def _call_once(
         client = factory(settings.llm_provider, settings)
         return _extract_text(client.invoke(prompt))
     except Exception as primary_error:
+        # INFO, not WARNING: a fallback is routine on the free tiers and must
+        # not land in the book's warnings.jsonl; counted on the log/trace side.
+        logger.info(
+            "llm fallback: %s failed (%s), trying %s",
+            settings.llm_provider,
+            type(primary_error).__name__,
+            settings.llm_fallback_provider,
+        )
         try:
             _pace(settings.llm_fallback_provider, sleep, clock)
             client = factory(settings.llm_fallback_provider, settings)
