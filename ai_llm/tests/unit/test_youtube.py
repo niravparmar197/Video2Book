@@ -569,6 +569,15 @@ def test_download_chunk_video_writes_local_file_and_scopes_range(tmp_path):
     assert FakeChunkDownloadYDL.last_opts["force_keyframes_at_cuts"] is True
 
 
+def test_downloads_give_up_on_a_stalled_connection_instead_of_hanging(tmp_path):
+    # A load test's fallback download hung 25+ minutes after a YouTube 403.
+    download_chunk_video(TEST_URL, 0.0, 60.0, tmp_path, ydl_factory=FakeChunkDownloadYDL)
+    opts = FakeChunkDownloadYDL.last_opts
+
+    assert opts["socket_timeout"] == 30
+    assert opts["external_downloader_args"]["ffmpeg_i"] == ["-rw_timeout", "30000000"]
+
+
 def test_fetch_video_reuses_cached_whisper_transcript_for_a_repeat_video(tmp_path):
     """The same video submitted for a second book must not re-download
     audio or re-run Whisper (2.5-6 min on CPU) -- it reuses the shared

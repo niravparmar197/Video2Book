@@ -624,6 +624,19 @@ FRAMES_VIDEO_FORMAT = (
 )
 
 
+# A download that stops receiving data must fail, not wait forever: under a
+# load test YouTube answered one book's fallback download with 403 and the
+# ffmpeg yt-dlp started for it sat silent for 25+ minutes, holding the book in
+# "rendering". socket_timeout bounds yt-dlp's own HTTP reads; -rw_timeout
+# (microseconds) bounds the ffmpeg that download_ranges runs. A failure here
+# only costs that chunk its screenshots (app.nodes.frames keeps going).
+_STALL_SECONDS = 30
+_DOWNLOAD_TIMEOUT_OPTS: dict[str, Any] = {
+    "socket_timeout": _STALL_SECONDS,
+    "external_downloader_args": {"ffmpeg_i": ["-rw_timeout", str(_STALL_SECONDS * 1_000_000)]},
+}
+
+
 def download_video_for_frames(
     url: str,
     output_path: str | Path,
@@ -644,6 +657,7 @@ def download_video_for_frames(
         "outtmpl": str(output_path),
         "quiet": True,
         "no_warnings": True,
+        **_DOWNLOAD_TIMEOUT_OPTS,
     }
     with ydl_factory(_with_auth(opts)) as ydl:
         ydl.download([url])
@@ -675,6 +689,7 @@ def download_chunk_video(
         "outtmpl": str(output_dir / "chunk_video.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
+        **_DOWNLOAD_TIMEOUT_OPTS,
     }
 
     with ydl_factory(_with_auth(opts)) as ydl:
