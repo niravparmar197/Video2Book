@@ -6,7 +6,7 @@ Scope: built only after `backend/` exists. A thin client over the backend API â€
 
 | Part | Tool |
 |---|---|
-| Framework | Next.js |
+| Framework | React + Vite (TypeScript) |
 | Styling | Tailwind CSS |
 
 ## Core flows (backed by `backend/`'s API â€” see `backend/AGENTS.md` for endpoints)

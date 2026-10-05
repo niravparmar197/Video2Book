@@ -5,6 +5,13 @@ description = "Video2Book core engine: YouTube video/playlist -> PDF book"
 requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-sqlite>=3.1",
+    "langchain-nvidia-ai-endpoints>=1.4",
+    "langchain-google-genai>=4.4",
+    # YouTube changes often; an old yt-dlp fails to fetch videos
+    "yt-dlp>=2026.8.19",
+    "Jinja2>=3.1",
     "imagehash>=4.3.0",
     "Pillow>=10.0.0",
     "matplotlib>=3.8.0",

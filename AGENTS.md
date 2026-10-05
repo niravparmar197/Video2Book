@@ -8,7 +8,7 @@ This file is the shared source of truth. Each subproject also has its own `AGENT
 
 1. **Core engine** (`ai_llm/`) — video in, PDF out, run from the command line. No web app, no database, no queue. Get PDF quality right before building a product around it.
 2. **Backend** (`backend/`) — FastAPI + PostgreSQL + BullMQ, wraps the core engine's `graph.py` behind an API and a job queue.
-3. **Frontend** (`frontend/`) — Next.js web app on top of the backend API.
+3. **Frontend** (`frontend/`) — React + Vite web app on top of the backend API.
 
 Do not add API, database, or queue code into `ai_llm/` — it must keep working standalone from the CLI. `backend/` must not reimplement pipeline logic — it imports and calls the core engine.
 
@@ -18,7 +18,7 @@ Do not add API, database, or queue code into `ai_llm/` — it must keep working 
 Video2Book/
 ├── ai_llm/     # Core Python engine: LangGraph pipeline, yt-dlp, ffmpeg, LLM calls, LaTeX -> PDF
 ├── backend/    # FastAPI + PostgreSQL + BullMQ, wraps ai_llm's graph.py (built after the core works)
-├── frontend/   # Next.js + Tailwind web app (built after the backend exists)
+├── frontend/   # React + Vite + Tailwind web app (built after the backend exists)
 ```
 
 ## Non-negotiable decisions

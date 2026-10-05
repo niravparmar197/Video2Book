@@ -47,8 +47,6 @@ Project rules and design decisions live in [`AGENTS.md`](AGENTS.md), with one pe
 ```bash
 cd ai_llm
 pip install -e ".[dev]"
-pip install langgraph langgraph-checkpoint-sqlite langchain-nvidia-ai-endpoints \
-            langchain-google-genai yt-dlp jinja2
 ```
 
 ### 3. Add your keys
